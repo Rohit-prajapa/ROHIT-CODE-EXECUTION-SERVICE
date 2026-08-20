@@ -1,0 +1,17 @@
+{
+  "name": "rohit-code-execution-service",
+  "version": "1.0.0",
+  "description": "ROHIT-CODE secure multi-language code execution service",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "node-pty": "^1.1.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
+}
