@@ -11,7 +11,8 @@ const app = express();
 
 const PORT = process.env.PORT || 10001;
 
-const EXECUTION_TIMEOUT = 30000;
+const EXECUTION_TIMEOUT = 10000;
+const COMPILE_TIMEOUT = 60000;
 
 // =========================================================
 // PLATFORM
@@ -946,13 +947,13 @@ async function compileNativeSource(
   );
 
   const result =
-    await runNativeProcess(
-      config.compile[0],
-      config.compile.slice(1),
-      jobDirectory,
-      "",
-      EXECUTION_TIMEOUT
-    );
+  await runNativeProcess(
+    config.compile[0],
+    config.compile.slice(1),
+    jobDirectory,
+    "",
+    COMPILE_TIMEOUT
+  );
 
   if (!result.success) {
     return {
