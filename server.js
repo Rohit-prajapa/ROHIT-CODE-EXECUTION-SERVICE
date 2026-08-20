@@ -11,7 +11,7 @@ const app = express();
 
 const PORT = process.env.PORT || 10001;
 
-const EXECUTION_TIMEOUT = 10000;
+const EXECUTION_TIMEOUT = 30000;
 const COMPILE_TIMEOUT = 60000;
 
 // =========================================================
@@ -167,6 +167,7 @@ const LANGUAGE_CONFIG = {
     compile: [
       "g++",
       "main.cpp",
+      "-std=c++17",
       "-O2",
       "-o",
       "main",
@@ -233,6 +234,8 @@ const LANGUAGE_CONFIG = {
     compile: [
       "go",
       "build",
+      "-p",
+      "1",
       "-o",
       "main",
       "main.go",
