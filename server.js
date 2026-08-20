@@ -142,8 +142,17 @@ const LANGUAGE_CONFIG = {
 
   c: {
     extension: "c",
-    type: "docker",
-    image: "gcc:13",
+    type: "native",
+
+    compile: [
+      "gcc",
+      "main.c",
+      "-O2",
+      "-o",
+      "main",
+    ],
+
+    run: ["./main"],
   },
 
   // =======================================================
@@ -152,8 +161,17 @@ const LANGUAGE_CONFIG = {
 
   cpp: {
     extension: "cpp",
-    type: "docker",
-    image: "gcc:13",
+    type: "native",
+
+    compile: [
+      "g++",
+      "main.cpp",
+      "-O2",
+      "-o",
+      "main",
+    ],
+
+    run: ["./main"],
   },
 
   // =======================================================
@@ -162,8 +180,17 @@ const LANGUAGE_CONFIG = {
 
   java: {
     extension: "java",
-    type: "docker",
-    image: "eclipse-temurin:21-jdk",
+    type: "native",
+
+    compile: [
+      "javac",
+      "Main.java",
+    ],
+
+    run: [
+      "java",
+      "Main",
+    ],
   },
 
   // =======================================================
@@ -172,8 +199,12 @@ const LANGUAGE_CONFIG = {
 
   python: {
     extension: "py",
-    type: "docker",
-    image: "python:3.12-slim",
+    type: "native",
+
+    run: [
+      "python3",
+      "main.py",
+    ],
   },
 
   // =======================================================
@@ -182,8 +213,12 @@ const LANGUAGE_CONFIG = {
 
   javascript: {
     extension: "js",
-    type: "docker",
-    image: "node:24-alpine",
+    type: "native",
+
+    run: [
+      "node",
+      "main.js",
+    ],
   },
 
   // =======================================================
@@ -192,8 +227,17 @@ const LANGUAGE_CONFIG = {
 
   go: {
     extension: "go",
-    type: "docker",
-    image: "golang:1.24-alpine",
+    type: "native",
+
+    compile: [
+      "go",
+      "build",
+      "-o",
+      "main",
+      "main.go",
+    ],
+
+    run: ["./main"],
   },
 
   // =======================================================
@@ -202,8 +246,12 @@ const LANGUAGE_CONFIG = {
 
   php: {
     extension: "php",
-    type: "docker",
-    image: "php:8.4-cli-alpine",
+    type: "native",
+
+    run: [
+      "php",
+      "main.php",
+    ],
   },
 
   // =======================================================
@@ -212,8 +260,17 @@ const LANGUAGE_CONFIG = {
 
   rust: {
     extension: "rs",
-    type: "docker",
-    image: "rust:1.88-alpine",
+    type: "native",
+
+    compile: [
+      "rustc",
+      "main.rs",
+      "-O",
+      "-o",
+      "main",
+    ],
+
+    run: ["./main"],
   },
 };
 
