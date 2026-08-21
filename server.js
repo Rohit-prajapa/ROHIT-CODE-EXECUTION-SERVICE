@@ -192,31 +192,6 @@ const LANGUAGE_CONFIG = {
   },
 
   // =======================================================
-  // GO
-  // =======================================================
-
-  go: {
-    extension: "go",
-    type: "native",
-
-    compile: [
-      "go",
-      "env",
-      "-w",
-      "GO111MODULE=off",
-      "go",
-      "build",
-      "-p",
-      "1",
-      "-o",
-      "main",
-      "main.go",
-    ],
-
-    run: ["main"],
-  },
-
-  // =======================================================
   // PHP
   // =======================================================
 
@@ -314,8 +289,6 @@ function runNativeProcess(
         ...process.env,
         HOME: cwd,
         PYTHONUNBUFFERED: "1",
-        GO111MODULE: "off",
-        GOTOOLCHAIN: "local",
       },
 
       shell: false,
@@ -995,7 +968,7 @@ function startNativeInteractiveProcess({
 
   let ptyArgs = config.run.slice(1);
 
-  const nativeLanguages = ["c", "cpp", "c++", "go"];
+  const nativeLanguages = ["c", "cpp", "c++"];
 
   // -------------------------------------------------------
   // NATIVE COMPILED EXECUTABLE
