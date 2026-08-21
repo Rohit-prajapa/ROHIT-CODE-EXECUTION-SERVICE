@@ -3,310 +3,188 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { v4: uuidv4 } = require("uuid");
 
-const RUST_IMAGE = "rust:1.88-alpine";
 const EXECUTION_TIMEOUT = 10000;
 
-// =========================================
-// NORMAL RUST EXECUTION
-// =========================================
+// ============================================================
+// RUST COMMAND
+// ============================================================
 
-function runRustDocker(code, input = "") {
-  return new Promise((resolve) => {
-    if (
-      typeof code !== "string" ||
-      !code.trim()
-    ) {
-      resolve({
-        success: false,
-        output: "No Rust code provided.",
-      });
-      return;
-    }
+const RUST_COMMAND =
+  process.platform === "win32"
+    ? "rustc.exe"
+    : "rustc";
 
-    const id = uuidv4();
+// ============================================================
+// CREATE TEMP RUST FILE
+// ============================================================
 
-    const tempDir = path.join(
-      __dirname,
-      "docker-temp",
-      `rust-${id}`,
-    );
-
-    const sourceFile = path.join(
-      tempDir,
-      "main.rs",
-    );
-
-    try {
-      fs.mkdirSync(tempDir, {
-        recursive: true,
-      });
-
-      fs.writeFileSync(
-        sourceFile,
-        code,
-        "utf8",
-      );
-    } catch (error) {
-      cleanup(tempDir);
-
-      resolve({
-        success: false,
-        output:
-          `Could not prepare Rust file: ${error.message}`,
-      });
-
-      return;
-    }
-
-    const dockerArgs = [
-      "run",
-      "--rm",
-      "-i",
-
-      // Resource limits
-      "--memory=256m",
-      "--cpus=0.5",
-      "--pids-limit=50",
-
-      // Security
-      "--network=none",
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges",
-
-      // Temporary filesystem
-      "--tmpfs",
-      "/tmp:rw,noexec,nosuid,size=32m",
-
-      // Source
-      "-v",
-      `${tempDir}:/code:rw`,
-
-      // Working directory
-      "-w",
-      "/code",
-
-      // Image
-      RUST_IMAGE,
-
-      "sh",
-      "-c",
-      "rustc main.rs -O -o main && ./main",
-    ];
-
-    const rustProcess = spawn(
-      "docker",
-      dockerArgs,
-      {
-        windowsHide: true,
-        stdio: [
-          "pipe",
-          "pipe",
-          "pipe",
-        ],
-      },
-    );
-
-    let stdout = "";
-    let stderr = "";
-    let finished = false;
-
-    const timeout = setTimeout(() => {
-      if (finished) return;
-
-      finished = true;
-
-      try {
-        rustProcess.kill("SIGKILL");
-      } catch {}
-
-      cleanup(tempDir);
-
-      resolve({
-        success: false,
-        output:
-          "⏱ Rust program timed out after 10 seconds.",
-      });
-    }, EXECUTION_TIMEOUT);
-
-    rustProcess.stdout.on(
-      "data",
-      (data) => {
-        stdout += data.toString();
-      },
-    );
-
-    rustProcess.stderr.on(
-      "data",
-      (data) => {
-        stderr += data.toString();
-      },
-    );
-
-    rustProcess.on(
-      "error",
-      (error) => {
-        if (finished) return;
-
-        finished = true;
-
-        clearTimeout(timeout);
-        cleanup(tempDir);
-
-        resolve({
-          success: false,
-          output:
-            error.message ||
-            "Could not start Docker.",
-        });
-      },
-    );
-
-    rustProcess.on(
-      "close",
-      (exitCode) => {
-        if (finished) return;
-
-        finished = true;
-
-        clearTimeout(timeout);
-        cleanup(tempDir);
-
-        if (exitCode === 0) {
-          resolve({
-            success: true,
-            output:
-              stdout ||
-              "Program finished with no output.",
-          });
-        } else {
-          resolve({
-            success: false,
-            output:
-              stderr ||
-              stdout ||
-              `Rust program exited with code ${exitCode}.`,
-          });
-        }
-      },
-    );
-
-    // Send input
-    try {
-      if (
-        rustProcess.stdin &&
-        !rustProcess.stdin.destroyed
-      ) {
-        rustProcess.stdin.write(
-          String(input ?? ""),
-        );
-
-        rustProcess.stdin.end();
-      }
-    } catch (error) {
-      if (finished) return;
-
-      finished = true;
-
-      clearTimeout(timeout);
-      cleanup(tempDir);
-
-      resolve({
-        success: false,
-        output:
-          `Could not send input: ${error.message}`,
-      });
-    }
-  });
-}
-
-// =========================================
-// INTERACTIVE RUST EXECUTION
-// =========================================
-
-function startRustInteractive(
-  code,
-  handlers = {},
-) {
-  const {
-    onOutput = () => {},
-    onExit = () => {},
-    onError = () => {},
-  } = handlers;
-
+function createRustTemp(code) {
   if (
     typeof code !== "string" ||
     !code.trim()
   ) {
-    onError("No Rust code provided.");
-    return null;
+    throw new Error("No Rust code provided.");
   }
 
   const id = uuidv4();
 
   const tempDir = path.join(
     __dirname,
-    "docker-temp",
-    `rust-interactive-${id}`,
+    "rust-temp",
+    `rust-${id}`,
   );
+
+  fs.mkdirSync(tempDir, {
+    recursive: true,
+  });
 
   const sourceFile = path.join(
     tempDir,
     "main.rs",
   );
 
+  fs.writeFileSync(
+    sourceFile,
+    code,
+    "utf8",
+  );
+
+  return tempDir;
+}
+
+// ============================================================
+// CLEANUP
+// ============================================================
+
+function cleanup(tempDir) {
   try {
-    fs.mkdirSync(tempDir, {
-      recursive: true,
-    });
-
-    fs.writeFileSync(
-      sourceFile,
-      code,
-      "utf8",
-    );
+    if (
+      tempDir &&
+      fs.existsSync(tempDir)
+    ) {
+      fs.rmSync(tempDir, {
+        recursive: true,
+        force: true,
+      });
+    }
   } catch (error) {
-    cleanup(tempDir);
-
-    onError(
-      `Could not prepare Rust file: ${error.message}`,
+    console.error(
+      "Rust cleanup error:",
+      error.message,
     );
-
-    return null;
   }
+}
 
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "-i",
+// ============================================================
+// COMPILE RUST
+// ============================================================
 
-    "--memory=256m",
-    "--cpus=0.5",
-    "--pids-limit=50",
+function compileRust(
+  tempDir,
+  onSuccess,
+  onError,
+) {
+  const executableName =
+    process.platform === "win32"
+      ? "rohit-rust-main.exe"
+      : "rohit-rust-main";
 
-    "--network=none",
-    "--cap-drop=ALL",
-    "--security-opt=no-new-privileges",
+  const compileProcess = spawn(
+    RUST_COMMAND,
+    [
+      "main.rs",
+      "-O",
+      "-o",
+      executableName,
+    ],
+    {
+      cwd: tempDir,
+      windowsHide: true,
+      stdio: [
+        "ignore",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
 
-    "--tmpfs",
-    "/tmp:rw,noexec,nosuid,size=32m",
+  let stdout = "";
+  let stderr = "";
+  let finished = false;
 
-    "-v",
-    `${tempDir}:/code:rw`,
+  compileProcess.stdout.on(
+    "data",
+    (data) => {
+      stdout += data.toString();
+    },
+  );
 
-    "-w",
-    "/code",
+  compileProcess.stderr.on(
+    "data",
+    (data) => {
+      stderr += data.toString();
+    },
+  );
 
-    RUST_IMAGE,
+  compileProcess.on(
+    "error",
+    (error) => {
+      if (finished) return;
 
-    "sh",
-    "-c",
-    "rustc main.rs -O -o main && ./main",
-  ];
+      finished = true;
+
+      onError(
+        error.message ||
+          "Could not start Rust compiler.",
+      );
+    },
+  );
+
+  compileProcess.on(
+    "close",
+    (exitCode) => {
+      if (finished) return;
+
+      finished = true;
+
+      if (exitCode !== 0) {
+        onError(
+          stderr ||
+            stdout ||
+            `Rust compilation failed with exit code ${exitCode}.`,
+        );
+
+        return;
+      }
+
+      onSuccess(executableName);
+    },
+  );
+}
+
+// ============================================================
+// START RUST EXECUTABLE
+// ============================================================
+
+function startRustExecutable({
+  tempDir,
+  executableName,
+  input = "",
+  interactive = false,
+  onOutput = () => {},
+  onExit = () => {},
+  onError = () => {},
+}) {
+  const executablePath = path.join(
+    tempDir,
+    executableName,
+  );
 
   const rustProcess = spawn(
-    "docker",
-    dockerArgs,
+    executablePath,
+    [],
     {
+      cwd: tempDir,
       windowsHide: true,
       stdio: [
         "pipe",
@@ -320,6 +198,10 @@ function startRustInteractive(
   let stdout = "";
   let stderr = "";
 
+  // ==========================================================
+  // TIMEOUT
+  // ==========================================================
+
   const timeout = setTimeout(() => {
     if (finished) return;
 
@@ -329,11 +211,11 @@ function startRustInteractive(
       rustProcess.kill("SIGKILL");
     } catch {}
 
-    cleanup(tempDir);
-
     onOutput(
-      "\r\n⏱ Program timed out after 10 seconds.\r\n",
+      "\r\n⏱ Rust program timed out after 10 seconds.\r\n",
     );
+
+    cleanup(tempDir);
 
     onExit(
       124,
@@ -342,9 +224,9 @@ function startRustInteractive(
     );
   }, EXECUTION_TIMEOUT);
 
-  // =========================================
+  // ==========================================================
   // STDOUT
-  // =========================================
+  // ==========================================================
 
   rustProcess.stdout.on(
     "data",
@@ -359,9 +241,9 @@ function startRustInteractive(
     },
   );
 
-  // =========================================
+  // ==========================================================
   // STDERR
-  // =========================================
+  // ==========================================================
 
   rustProcess.stderr.on(
     "data",
@@ -376,9 +258,9 @@ function startRustInteractive(
     },
   );
 
-  // =========================================
-  // ERROR
-  // =========================================
+  // ==========================================================
+  // PROCESS ERROR
+  // ==========================================================
 
   rustProcess.on(
     "error",
@@ -392,14 +274,14 @@ function startRustInteractive(
 
       onError(
         error.message ||
-          "Could not start Docker.",
+          "Could not start Rust program.",
       );
     },
   );
 
-  // =========================================
-  // CLOSE
-  // =========================================
+  // ==========================================================
+  // PROCESS CLOSE
+  // ==========================================================
 
   rustProcess.on(
     "close",
@@ -412,36 +294,95 @@ function startRustInteractive(
       cleanup(tempDir);
 
       onExit(
-        exitCode,
+        exitCode === null
+          ? 0
+          : exitCode,
         stdout,
         stderr,
       );
     },
   );
 
-  // =========================================
+  // ==========================================================
+  // NORMAL INPUT
+  // ==========================================================
+
+  if (!interactive) {
+    try {
+      if (
+        rustProcess.stdin &&
+        !rustProcess.stdin.destroyed &&
+        !rustProcess.stdin.writableEnded
+      ) {
+        rustProcess.stdin.write(
+          String(input ?? ""),
+        );
+
+        rustProcess.stdin.end();
+      }
+    } catch (error) {
+      if (!finished) {
+        finished = true;
+
+        clearTimeout(timeout);
+        cleanup(tempDir);
+
+        onError(
+          `Could not send Rust input: ${error.message}`,
+        );
+      }
+    }
+  }
+
+  // ==========================================================
   // CONTROLLER
-  // =========================================
+  // ==========================================================
 
   return {
     writeInput(input) {
       if (finished) return;
 
+      const stdin =
+        rustProcess.stdin;
+
       if (
-        !rustProcess.stdin ||
-        rustProcess.stdin.destroyed ||
-        rustProcess.stdin.writableEnded
+        !stdin ||
+        stdin.destroyed ||
+        stdin.writableEnded
       ) {
         return;
       }
 
       try {
-        rustProcess.stdin.write(
-          String(input),
+        stdin.write(
+          String(input ?? ""),
         );
       } catch (error) {
         onError(
-          `Could not send input: ${error.message}`,
+          `Could not send Rust input: ${error.message}`,
+        );
+      }
+    },
+
+    endInput() {
+      if (finished) return;
+
+      const stdin =
+        rustProcess.stdin;
+
+      if (
+        !stdin ||
+        stdin.destroyed ||
+        stdin.writableEnded
+      ) {
+        return;
+      }
+
+      try {
+        stdin.end();
+      } catch (error) {
+        onError(
+          `Could not close Rust input: ${error.message}`,
         );
       }
     },
@@ -462,34 +403,160 @@ function startRustInteractive(
   };
 }
 
-// =========================================
-// CLEANUP
-// =========================================
+// ============================================================
+// NORMAL RUST EXECUTION
+// ============================================================
 
-function cleanup(tempDir) {
-  try {
-    if (
-      tempDir &&
-      fs.existsSync(tempDir)
-    ) {
-      fs.rmSync(tempDir, {
-        recursive: true,
-        force: true,
+function runRust(
+  code,
+  input = "",
+) {
+  return new Promise((resolve) => {
+    let tempDir;
+
+    try {
+      tempDir = createRustTemp(code);
+    } catch (error) {
+      resolve({
+        success: false,
+        output:
+          `Could not prepare Rust file: ${error.message}`,
       });
+
+      return;
     }
-  } catch (error) {
-    console.error(
-      "Rust Docker cleanup error:",
-      error.message,
+
+    compileRust(
+      tempDir,
+
+      (executableName) => {
+        startRustExecutable({
+          tempDir,
+          executableName,
+          input,
+          interactive: false,
+
+          onOutput: () => {},
+
+          onExit: (
+            exitCode,
+            stdout,
+            stderr,
+          ) => {
+            resolve({
+              success: exitCode === 0,
+              output:
+                stdout ||
+                stderr ||
+                `Rust program exited with code ${exitCode}.`,
+            });
+          },
+
+          onError: (error) => {
+            cleanup(tempDir);
+
+            resolve({
+              success: false,
+              output: String(error),
+            });
+          },
+        });
+      },
+
+      (error) => {
+        cleanup(tempDir);
+
+        resolve({
+          success: false,
+          output:
+            `Rust compilation error:\n${error}`,
+        });
+      },
     );
-  }
+  });
 }
 
-// =========================================
+// ============================================================
+// INTERACTIVE RUST
+// ============================================================
+
+function startRustInteractive(
+  code,
+  handlers = {},
+) {
+  const {
+    onOutput = () => {},
+    onExit = () => {},
+    onError = () => {},
+  } = handlers;
+
+  let tempDir;
+
+  try {
+    tempDir = createRustTemp(code);
+  } catch (error) {
+    onError(
+      `Could not prepare Rust file: ${error.message}`,
+    );
+
+    return null;
+  }
+
+  let controller = null;
+
+  compileRust(
+    tempDir,
+
+    (executableName) => {
+      controller =
+        startRustExecutable({
+          tempDir,
+          executableName,
+          interactive: true,
+          onOutput,
+          onExit,
+          onError,
+        });
+    },
+
+    (error) => {
+      cleanup(tempDir);
+
+      onError(
+        `Rust compilation error:\n${error}`,
+      );
+    },
+  );
+
+  return {
+    writeInput(input) {
+      if (controller) {
+        controller.writeInput(input);
+      }
+    },
+
+    endInput() {
+      if (controller) {
+        controller.endInput();
+      }
+    },
+
+    stop() {
+      if (controller) {
+        controller.stop();
+      } else {
+        cleanup(tempDir);
+      }
+    },
+  };
+}
+
+// ============================================================
 // EXPORT
-// =========================================
+// ============================================================
 
 module.exports = {
-  runRustDocker,
+  runRust,
+  runRustDocker: runRust,
   startRustInteractive,
 };

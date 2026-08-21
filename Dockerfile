@@ -2,10 +2,6 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# =========================================
-# INSTALL ALL LANGUAGES
-# =========================================
-
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
@@ -22,18 +18,13 @@ RUN apt-get update && apt-get install -y \
     cargo \
     ca-certificates \
     curl \
-    coreutils \
     && rm -rf /var/lib/apt/lists/*
-
-# =========================================
-# VERIFY INSTALLATIONS
-# =========================================
 
 RUN gcc --version && \
     g++ --version && \
     java -version && \
     javac -version && \
-    python3 --version && \
+    python --version && \
     node --version && \
     npm --version && \
     go version && \
@@ -41,33 +32,16 @@ RUN gcc --version && \
     rustc --version && \
     cargo --version
 
-# =========================================
-# APPLICATION
-# =========================================
-
 WORKDIR /app
 
 COPY package*.json ./
 
 RUN npm install --omit=dev
 
-COPY server.js ./
-
-COPY execution ./execution
-
-COPY geminiService.js ./
-
-COPY terminalDockerRunner.js ./
-
-# =========================================
-# RENDER PORT
-# =========================================
+COPY . .
 
 ENV PORT=10000
-EXPOSE 10000
 
-# =========================================
-# START SERVER
-# =========================================
+EXPOSE 10000
 
 CMD ["node", "server.js"]

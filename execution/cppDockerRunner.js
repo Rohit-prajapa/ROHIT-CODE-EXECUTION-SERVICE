@@ -6,32 +6,32 @@ const { v4: uuidv4 } = require("uuid");
 const EXECUTION_TIMEOUT = 10000;
 
 // ============================================================
-// NODE COMMAND
+// C++ COMMAND
 // ============================================================
 
-const NODE_COMMAND =
+const CPP_COMMAND =
   process.platform === "win32"
-    ? "node.exe"
-    : "node";
+    ? "g++"
+    : "g++";
 
 // ============================================================
-// CREATE TEMP JAVASCRIPT FILE
+// CREATE TEMP C++ FILE
 // ============================================================
 
-function createJavaScriptTemp(code) {
+function createCppTemp(code) {
   if (
     typeof code !== "string" ||
     !code.trim()
   ) {
-    throw new Error("No JavaScript code provided.");
+    throw new Error("No C++ code provided.");
   }
 
   const id = uuidv4();
 
   const tempDir = path.join(
     __dirname,
-    "javascript-temp",
-    `javascript-${id}`,
+    "cpp-temp",
+    `cpp-${id}`,
   );
 
   fs.mkdirSync(tempDir, {
@@ -40,7 +40,7 @@ function createJavaScriptTemp(code) {
 
   const sourceFile = path.join(
     tempDir,
-    "main.js",
+    "main.cpp",
   );
 
   fs.writeFileSync(
@@ -69,17 +69,17 @@ function cleanup(tempDir) {
     }
   } catch (error) {
     console.error(
-      "JavaScript cleanup error:",
+      "C++ cleanup error:",
       error.message,
     );
   }
 }
 
 // ============================================================
-// START JAVASCRIPT PROCESS
+// START C++ PROCESS
 // ============================================================
 
-function startJavaScriptProcess({
+function startCppProcess({
   tempDir,
   input = "",
   interactive = false,
@@ -87,11 +87,141 @@ function startJavaScriptProcess({
   onExit = () => {},
   onError = () => {},
 }) {
-  const jsProcess = spawn(
-    NODE_COMMAND,
+  const executableName =
+    process.platform === "win32"
+      ? "main.exe"
+      : "./main";
+
+  const compileCommand =
+    process.platform === "win32"
+      ? "g++ main.cpp -std=c++17 -O2 -o main.exe"
+      : "g++ main.cpp -std=c++17 -O2 -o main";
+
+  const runCommand =
+    process.platform === "win32"
+      ? "main.exe"
+      : "./main";
+
+  // ==========================================================
+  // COMPILE FIRST
+  // ==========================================================
+
+  const compileProcess = spawn(
+    CPP_COMMAND,
     [
-      "main.js",
+      "main.cpp",
+      "-std=c++17",
+      "-O2",
+      "-o",
+      executableName,
     ],
+    {
+      cwd: tempDir,
+      windowsHide: true,
+      stdio: [
+        "pipe",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
+
+  let compileStdout = "";
+  let compileStderr = "";
+  let compileFinished = false;
+
+  compileProcess.stdout.on(
+    "data",
+    (data) => {
+      compileStdout += data.toString();
+    },
+  );
+
+  compileProcess.stderr.on(
+    "data",
+    (data) => {
+      compileStderr += data.toString();
+    },
+  );
+
+  compileProcess.on(
+    "error",
+    (error) => {
+      if (compileFinished) return;
+
+      compileFinished = true;
+
+      cleanup(tempDir);
+
+      onError(
+        error.message ||
+          "Could not start C++ compiler.",
+      );
+    },
+  );
+
+  compileProcess.on(
+    "close",
+    (exitCode) => {
+      if (compileFinished) return;
+
+      compileFinished = true;
+
+      // ======================================================
+      // COMPILATION FAILED
+      // ======================================================
+
+      if (exitCode !== 0) {
+        cleanup(tempDir);
+
+        onOutput(
+          compileStderr ||
+            compileStdout ||
+            "C++ compilation failed.",
+        );
+
+        onExit(
+          exitCode,
+          "",
+          compileStderr,
+        );
+
+        return;
+      }
+
+      // ======================================================
+      // COMPILATION SUCCESSFUL
+      // ======================================================
+
+      startCppExecutable({
+        tempDir,
+        runCommand,
+        input,
+        interactive,
+        onOutput,
+        onExit,
+        onError,
+      });
+    },
+  );
+}
+
+// ============================================================
+// START COMPILED C++ PROGRAM
+// ============================================================
+
+function startCppExecutable({
+  tempDir,
+  runCommand,
+  input = "",
+  interactive = false,
+  onOutput = () => {},
+  onExit = () => {},
+  onError = () => {},
+}) {
+  const cppProcess = spawn(
+    runCommand,
+    [],
     {
       cwd: tempDir,
       windowsHide: true,
@@ -117,20 +247,11 @@ function startJavaScriptProcess({
     finished = true;
 
     try {
-      if (
-        jsProcess.stdin &&
-        !jsProcess.stdin.destroyed
-      ) {
-        jsProcess.stdin.destroy();
-      }
-    } catch {}
-
-    try {
-      jsProcess.kill("SIGKILL");
+      cppProcess.kill("SIGKILL");
     } catch {}
 
     onOutput(
-      "\r\n⏱ JavaScript program timed out after 10 seconds.\r\n",
+      "\r\n⏱ C++ program timed out after 10 seconds.\r\n",
     );
 
     cleanup(tempDir);
@@ -146,7 +267,7 @@ function startJavaScriptProcess({
   // STDOUT
   // ==========================================================
 
-  jsProcess.stdout.on(
+  cppProcess.stdout.on(
     "data",
     (data) => {
       if (finished) return;
@@ -163,7 +284,7 @@ function startJavaScriptProcess({
   // STDERR
   // ==========================================================
 
-  jsProcess.stderr.on(
+  cppProcess.stderr.on(
     "data",
     (data) => {
       if (finished) return;
@@ -180,7 +301,7 @@ function startJavaScriptProcess({
   // PROCESS ERROR
   // ==========================================================
 
-  jsProcess.on(
+  cppProcess.on(
     "error",
     (error) => {
       if (finished) return;
@@ -192,7 +313,7 @@ function startJavaScriptProcess({
 
       onError(
         error.message ||
-          "Could not start Node.js.",
+          "Could not start C++ program.",
       );
     },
   );
@@ -201,7 +322,7 @@ function startJavaScriptProcess({
   // PROCESS CLOSE
   // ==========================================================
 
-  jsProcess.on(
+  cppProcess.on(
     "close",
     (exitCode) => {
       if (finished) return;
@@ -212,9 +333,7 @@ function startJavaScriptProcess({
       cleanup(tempDir);
 
       onExit(
-        exitCode === null
-          ? 0
-          : exitCode,
+        exitCode,
         stdout,
         stderr,
       );
@@ -228,14 +347,14 @@ function startJavaScriptProcess({
   if (!interactive) {
     try {
       if (
-        jsProcess.stdin &&
-        !jsProcess.stdin.destroyed
+        cppProcess.stdin &&
+        !cppProcess.stdin.destroyed
       ) {
-        jsProcess.stdin.write(
+        cppProcess.stdin.write(
           String(input ?? ""),
         );
 
-        jsProcess.stdin.end();
+        cppProcess.stdin.end();
       }
     } catch (error) {
       if (!finished) {
@@ -245,7 +364,7 @@ function startJavaScriptProcess({
         cleanup(tempDir);
 
         onError(
-          `Could not send JavaScript input: ${error.message}`,
+          `Could not send C++ input: ${error.message}`,
         );
       }
     }
@@ -260,20 +379,20 @@ function startJavaScriptProcess({
       if (finished) return;
 
       if (
-        !jsProcess.stdin ||
-        jsProcess.stdin.destroyed ||
-        jsProcess.stdin.writableEnded
+        !cppProcess.stdin ||
+        cppProcess.stdin.destroyed ||
+        cppProcess.stdin.writableEnded
       ) {
         return;
       }
 
       try {
-        jsProcess.stdin.write(
+        cppProcess.stdin.write(
           String(input),
         );
       } catch (error) {
         onError(
-          `Could not send JavaScript input: ${error.message}`,
+          `Could not send C++ input: ${error.message}`,
         );
       }
     },
@@ -286,16 +405,7 @@ function startJavaScriptProcess({
       clearTimeout(timeout);
 
       try {
-        if (
-          jsProcess.stdin &&
-          !jsProcess.stdin.destroyed
-        ) {
-          jsProcess.stdin.destroy();
-        }
-      } catch {}
-
-      try {
-        jsProcess.kill("SIGKILL");
+        cppProcess.kill("SIGKILL");
       } catch {}
 
       cleanup(tempDir);
@@ -304,10 +414,10 @@ function startJavaScriptProcess({
 }
 
 // ============================================================
-// NORMAL JAVASCRIPT EXECUTION
+// NORMAL C++ EXECUTION
 // ============================================================
 
-function runJavaScript(
+function runCppNormal(
   code,
   input = "",
 ) {
@@ -315,18 +425,18 @@ function runJavaScript(
     let tempDir;
 
     try {
-      tempDir = createJavaScriptTemp(code);
+      tempDir = createCppTemp(code);
     } catch (error) {
       resolve({
         success: false,
         output:
-          `Could not prepare JavaScript file: ${error.message}`,
+          `Could not prepare C++ file: ${error.message}`,
       });
 
       return;
     }
 
-    startJavaScriptProcess({
+    startCppProcess({
       tempDir,
       input,
       interactive: false,
@@ -343,7 +453,7 @@ function runJavaScript(
           output:
             stdout ||
             stderr ||
-            `JavaScript program exited with code ${exitCode}.`,
+            `C++ program exited with code ${exitCode}.`,
         });
       },
 
@@ -360,10 +470,10 @@ function runJavaScript(
 }
 
 // ============================================================
-// INTERACTIVE JAVASCRIPT
+// INTERACTIVE C++ EXECUTION
 // ============================================================
 
-function startJavaScriptInteractive(
+function startCppInteractive(
   code,
   handlers = {},
 ) {
@@ -376,16 +486,16 @@ function startJavaScriptInteractive(
   let tempDir;
 
   try {
-    tempDir = createJavaScriptTemp(code);
+    tempDir = createCppTemp(code);
   } catch (error) {
     onError(
-      `Could not prepare JavaScript file: ${error.message}`,
+      `Could not prepare C++ file: ${error.message}`,
     );
 
     return null;
   }
 
-  return startJavaScriptProcess({
+  return startCppProcess({
     tempDir,
     interactive: true,
     onOutput,
@@ -399,6 +509,6 @@ function startJavaScriptInteractive(
 // ============================================================
 
 module.exports = {
-  startJavaScriptInteractive,
-  runJavaScript,
+  runCppNormal,
+  startCppInteractive,
 };

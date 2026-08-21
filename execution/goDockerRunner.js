@@ -3,209 +3,223 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { v4: uuidv4 } = require("uuid");
 
-const GO_IMAGE = "golang:1.24-alpine";
-
 const EXECUTION_TIMEOUT = 30000;
 const PROGRAM_TIMEOUT = 15000;
 
-// =========================================
-// INTERACTIVE GO
-// =========================================
+// ============================================================
+// GO COMMAND
+// ============================================================
 
-function startGoInteractive(code, handlers = {}) {
-  const {
-    onOutput = () => {},
-    onExit = () => {},
-    onError = () => {},
-  } = handlers;
+const GO_COMMAND =
+  process.platform === "win32"
+    ? "go.exe"
+    : "go";
 
-  return createGoProcess({
-    code,
-    interactive: true,
-    onOutput,
-    onExit,
-    onError,
-  });
-}
+// ============================================================
+// CREATE TEMP GO FILE
+// ============================================================
 
-// =========================================
-// NORMAL GO
-// =========================================
-
-function runGo(code, input = "") {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-
-    const controller = createGoProcess({
-      code,
-      interactive: false,
-
-      onOutput: (data) => {
-        stdout += String(data);
-      },
-
-      onExit: (exitCode) => {
-        resolve({
-          success: exitCode === 0,
-          output: stdout || stderr || `Process exited with code ${exitCode}.`,
-        });
-      },
-
-      onError: (error) => {
-        resolve({
-          success: false,
-          output: String(error),
-        });
-      },
-    });
-
-    if (!controller) {
-      resolve({
-        success: false,
-        output: "Could not start Go process.",
-      });
-
-      return;
-    }
-
-    if (input !== undefined && input !== null) {
-      controller.writeInput(String(input));
-
-      controller.endInput();
-    }
-  });
-}
-
-// =========================================
-// CREATE GO PROCESS
-// =========================================
-
-function createGoProcess({
-  code,
-  interactive = true,
-  onOutput = () => {},
-  onExit = () => {},
-  onError = () => {},
-}) {
-  if (typeof code !== "string" || !code.trim()) {
-    onError("No Go code provided.");
-    return null;
+function createGoTemp(code) {
+  if (
+    typeof code !== "string" ||
+    !code.trim()
+  ) {
+    throw new Error("No Go code provided.");
   }
 
   const id = uuidv4();
 
-  const tempDir = path.join(__dirname, "docker-temp", `go-${id}`);
+  const tempDir = path.join(
+    __dirname,
+    "go-temp",
+    `go-${id}`,
+  );
 
-  const sourceFile = path.join(tempDir, "main.go");
-
-  // =========================================
-  // PREPARE SOURCE
-  // =========================================
-
-  try {
-    fs.mkdirSync(tempDir, {
-      recursive: true,
-    });
-
-    fs.writeFileSync(sourceFile, code, "utf8");
-  } catch (error) {
-    cleanup(tempDir);
-
-    onError(`Could not prepare Go file: ${error.message}`);
-
-    return null;
-  }
-
-  // =========================================
-  // DOCKER
-  // =========================================
-
-  const dockerArgs = [
-    "run",
-    "--rm",
-
-    // IMPORTANT:
-    // Keep stdin open for interactive programs.
-    "-i",
-
-    // Resource limits
-    "--memory=512m",
-    "--cpus=0.5",
-    "--pids-limit=100",
-
-    // Security
-    "--network=none",
-    "--cap-drop=ALL",
-    "--security-opt=no-new-privileges",
-
-    // Source code
-    "-v",
-    `${tempDir}:/code:rw`,
-
-    // Working directory
-    "-w",
-    "/code",
-
-    GO_IMAGE,
-
-    "sh",
-    "-c",
-
-    /*
-     * Build directly in the normal container filesystem.
-     *
-     * Do NOT use a custom /tmp tmpfs.
-     * This avoids the previous permission-denied problem.
-     */
-    `GOCACHE=/tmp/go-cache \
-GOMODCACHE=/tmp/go-mod-cache \
-GOMAXPROCS=1 \
-go build -p 1 -o /code/rohit-go-main main.go \
-&& chmod 755 /code/rohit-go-main \
-&& timeout ${Math.floor(PROGRAM_TIMEOUT / 1000)} /code/rohit-go-main`,
-  ];
-
-  // =========================================
-  // START DOCKER
-  // =========================================
-
-  const goProcess = spawn("docker", dockerArgs, {
-    windowsHide: true,
-
-    stdio: ["pipe", "pipe", "pipe"],
+  fs.mkdirSync(tempDir, {
+    recursive: true,
   });
+
+  const sourceFile = path.join(
+    tempDir,
+    "main.go",
+  );
+
+  fs.writeFileSync(
+    sourceFile,
+    code,
+    "utf8",
+  );
+
+  return tempDir;
+}
+
+// ============================================================
+// CLEANUP
+// ============================================================
+
+function cleanup(tempDir) {
+  try {
+    if (
+      tempDir &&
+      fs.existsSync(tempDir)
+    ) {
+      fs.rmSync(tempDir, {
+        recursive: true,
+        force: true,
+      });
+    }
+  } catch (error) {
+    console.error(
+      "Go cleanup error:",
+      error.message,
+    );
+  }
+}
+
+// ============================================================
+// COMPILE GO
+// ============================================================
+
+function compileGo(
+  tempDir,
+  onSuccess,
+  onError,
+) {
+  const outputName =
+    process.platform === "win32"
+      ? "rohit-go-main.exe"
+      : "rohit-go-main";
+
+  const compileProcess = spawn(
+    GO_COMMAND,
+    [
+      "build",
+      "-p",
+      "1",
+      "-o",
+      outputName,
+      "main.go",
+    ],
+    {
+      cwd: tempDir,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CGO_ENABLED: "0",
+        GOCACHE: path.join(
+          tempDir,
+          "go-cache",
+        ),
+        GOMODCACHE: path.join(
+          tempDir,
+          "go-mod-cache",
+        ),
+        GOMAXPROCS: "1",
+      },
+      stdio: [
+        "ignore",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
+
+  let stdout = "";
+  let stderr = "";
+  let finished = false;
+
+  compileProcess.stdout.on(
+    "data",
+    (data) => {
+      stdout += data.toString();
+    },
+  );
+
+  compileProcess.stderr.on(
+    "data",
+    (data) => {
+      stderr += data.toString();
+    },
+  );
+
+  compileProcess.on(
+    "error",
+    (error) => {
+      if (finished) return;
+
+      finished = true;
+
+      onError(
+        error.message ||
+          "Could not start Go compiler.",
+      );
+    },
+  );
+
+  compileProcess.on(
+    "close",
+    (exitCode) => {
+      if (finished) return;
+
+      finished = true;
+
+      if (exitCode !== 0) {
+        onError(
+          stderr ||
+            stdout ||
+            `Go compilation failed with exit code ${exitCode}.`,
+        );
+
+        return;
+      }
+
+      onSuccess(outputName);
+    },
+  );
+}
+
+// ============================================================
+// START COMPILED GO PROGRAM
+// ============================================================
+
+function startGoExecutable({
+  tempDir,
+  executableName,
+  input = "",
+  interactive = false,
+  onOutput = () => {},
+  onExit = () => {},
+  onError = () => {},
+}) {
+  const executablePath = path.join(
+    tempDir,
+    executableName,
+  );
+
+  const goProcess = spawn(
+    executablePath,
+    [],
+    {
+      cwd: tempDir,
+      windowsHide: true,
+      stdio: [
+        "pipe",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
 
   let finished = false;
   let stdout = "";
   let stderr = "";
 
-  // =========================================
-  // FINISH
-  // =========================================
-
-  const finish = (exitCode) => {
-    if (finished) {
-      return;
-    }
-
-    finished = true;
-
-    clearTimeout(timeout);
-
-    cleanup(tempDir);
-
-    onExit(exitCode, stdout, stderr);
-  };
-
-  // =========================================
-  // SERVER TIMEOUT
-  // =========================================
+  // ==========================================================
+  // TIMEOUT
+  // ==========================================================
 
   const timeout = setTimeout(() => {
-    if (finished) {
-      return;
-    }
+    if (finished) return;
 
     finished = true;
 
@@ -213,143 +227,184 @@ go build -p 1 -o /code/rohit-go-main main.go \
       goProcess.kill("SIGKILL");
     } catch {}
 
+    onOutput(
+      "\r\n⏱ Go program timed out after 30 seconds.\r\n",
+    );
+
     cleanup(tempDir);
 
-    onOutput("\r\n⏱ Go program timed out after 30 seconds.\r\n");
-
-    onExit(124, stdout, stderr);
+    onExit(
+      124,
+      stdout,
+      stderr,
+    );
   }, EXECUTION_TIMEOUT);
 
-  // =========================================
+  // ==========================================================
   // STDOUT
-  // =========================================
+  // ==========================================================
 
-  goProcess.stdout.on("data", (data) => {
-    if (finished) {
-      return;
-    }
+  goProcess.stdout.on(
+    "data",
+    (data) => {
+      if (finished) return;
 
-    const text = data.toString();
+      const text = data.toString();
 
-    stdout += text;
+      stdout += text;
 
-    onOutput(text);
-  });
+      onOutput(text);
+    },
+  );
 
-  // =========================================
+  // ==========================================================
   // STDERR
-  // =========================================
+  // ==========================================================
 
-  goProcess.stderr.on("data", (data) => {
-    if (finished) {
-      return;
-    }
+  goProcess.stderr.on(
+    "data",
+    (data) => {
+      if (finished) return;
 
-    const text = data.toString();
+      const text = data.toString();
 
-    stderr += text;
+      stderr += text;
 
-    onOutput(text);
-  });
+      onOutput(text);
+    },
+  );
 
-  // =========================================
-  // DOCKER ERROR
-  // =========================================
+  // ==========================================================
+  // PROCESS ERROR
+  // ==========================================================
 
-  goProcess.on("error", (error) => {
-    if (finished) {
-      return;
-    }
+  goProcess.on(
+    "error",
+    (error) => {
+      if (finished) return;
 
-    finished = true;
+      finished = true;
 
-    clearTimeout(timeout);
+      clearTimeout(timeout);
+      cleanup(tempDir);
 
-    cleanup(tempDir);
+      onError(
+        error.message ||
+          "Could not start Go program.",
+      );
+    },
+  );
 
-    onError(error.message || "Could not start Docker.");
-  });
+  // ==========================================================
+  // PROCESS CLOSE
+  // ==========================================================
 
-  // =========================================
-  // DOCKER CLOSE
-  // =========================================
+  goProcess.on(
+    "close",
+    (exitCode) => {
+      if (finished) return;
 
-  goProcess.on("close", (exitCode) => {
-    if (finished) {
-      return;
-    }
+      finished = true;
 
-    finish(exitCode);
-  });
+      clearTimeout(timeout);
+      cleanup(tempDir);
 
-  // =========================================
+      onExit(
+        exitCode === null
+          ? 0
+          : exitCode,
+        stdout,
+        stderr,
+      );
+    },
+  );
+
+  // ==========================================================
   // NORMAL INPUT
-  // =========================================
+  // ==========================================================
 
   if (!interactive) {
-    const programInput =
-      typeof input === "string" ? input : String(input ?? "");
-
     try {
       if (
         goProcess.stdin &&
         !goProcess.stdin.destroyed &&
         !goProcess.stdin.writableEnded
       ) {
-        goProcess.stdin.write(programInput);
+        goProcess.stdin.write(
+          String(input ?? ""),
+        );
 
         goProcess.stdin.end();
       }
     } catch (error) {
-      onError(`Could not send input: ${error.message}`);
+      if (!finished) {
+        finished = true;
+
+        clearTimeout(timeout);
+        cleanup(tempDir);
+
+        onError(
+          `Could not send Go input: ${error.message}`,
+        );
+      }
     }
   }
 
-  // =========================================
-  // INTERACTIVE CONTROLLER
-  // =========================================
+  // ==========================================================
+  // CONTROLLER
+  // ==========================================================
 
   return {
     writeInput(input) {
-      if (finished) {
-        return;
-      }
+      if (finished) return;
 
-      const stdin = goProcess.stdin;
+      const stdin =
+        goProcess.stdin;
 
-      if (!stdin || stdin.destroyed || stdin.writableEnded) {
+      if (
+        !stdin ||
+        stdin.destroyed ||
+        stdin.writableEnded
+      ) {
         return;
       }
 
       try {
-        stdin.write(String(input ?? ""));
+        stdin.write(
+          String(input ?? ""),
+        );
       } catch (error) {
-        onError(`Could not send Go input: ${error.message}`);
+        onError(
+          `Could not send Go input: ${error.message}`,
+        );
       }
     },
 
     endInput() {
-      if (finished) {
-        return;
-      }
+      if (finished) return;
 
-      const stdin = goProcess.stdin;
+      const stdin =
+        goProcess.stdin;
 
-      if (!stdin || stdin.destroyed || stdin.writableEnded) {
+      if (
+        !stdin ||
+        stdin.destroyed ||
+        stdin.writableEnded
+      ) {
         return;
       }
 
       try {
         stdin.end();
       } catch (error) {
-        onError(`Could not close Go input: ${error.message}`);
+        onError(
+          `Could not close Go input: ${error.message}`,
+        );
       }
     },
 
     stop() {
-      if (finished) {
-        return;
-      }
+      if (finished) return;
 
       finished = true;
 
@@ -364,26 +419,158 @@ go build -p 1 -o /code/rohit-go-main main.go \
   };
 }
 
-// =========================================
-// CLEANUP
-// =========================================
+// ============================================================
+// NORMAL GO EXECUTION
+// ============================================================
 
-function cleanup(tempDir) {
-  try {
-    if (tempDir && fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, {
-        recursive: true,
-        force: true,
+function runGo(
+  code,
+  input = "",
+) {
+  return new Promise((resolve) => {
+    let tempDir;
+
+    try {
+      tempDir = createGoTemp(code);
+    } catch (error) {
+      resolve({
+        success: false,
+        output:
+          `Could not prepare Go file: ${error.message}`,
       });
+
+      return;
     }
-  } catch (error) {
-    console.error("Go Docker cleanup error:", error.message);
-  }
+
+    compileGo(
+      tempDir,
+
+      (executableName) => {
+        startGoExecutable({
+          tempDir,
+          executableName,
+          input,
+          interactive: false,
+
+          onOutput: () => {},
+
+          onExit: (
+            exitCode,
+            stdout,
+            stderr,
+          ) => {
+            resolve({
+              success:
+                exitCode === 0,
+              output:
+                stdout ||
+                stderr ||
+                `Go program exited with code ${exitCode}.`,
+            });
+          },
+
+          onError: (error) => {
+            cleanup(tempDir);
+
+            resolve({
+              success: false,
+              output: String(error),
+            });
+          },
+        });
+      },
+
+      (error) => {
+        cleanup(tempDir);
+
+        resolve({
+          success: false,
+          output:
+            `Go compilation error:\n${error}`,
+        });
+      },
+    );
+  });
 }
 
-// =========================================
+// ============================================================
+// INTERACTIVE GO
+// ============================================================
+
+function startGoInteractive(
+  code,
+  handlers = {},
+) {
+  const {
+    onOutput = () => {},
+    onExit = () => {},
+    onError = () => {},
+  } = handlers;
+
+  let tempDir;
+
+  try {
+    tempDir = createGoTemp(code);
+  } catch (error) {
+    onError(
+      `Could not prepare Go file: ${error.message}`,
+    );
+
+    return null;
+  }
+
+  let controller = null;
+
+  compileGo(
+    tempDir,
+
+    (executableName) => {
+      controller =
+        startGoExecutable({
+          tempDir,
+          executableName,
+          interactive: true,
+          onOutput,
+          onExit,
+          onError,
+        });
+    },
+
+    (error) => {
+      cleanup(tempDir);
+
+      onError(
+        `Go compilation error:\n${error}`,
+      );
+    },
+  );
+
+  return {
+    writeInput(input) {
+      if (controller) {
+        controller.writeInput(input);
+      }
+    },
+
+    endInput() {
+      if (controller) {
+        controller.endInput();
+      }
+    },
+
+    stop() {
+      if (controller) {
+        controller.stop();
+      } else {
+        cleanup(tempDir);
+      }
+    },
+  };
+}
+
+// ============================================================
 // EXPORT
-// =========================================
+// ============================================================
 
 module.exports = {
   startGoInteractive,

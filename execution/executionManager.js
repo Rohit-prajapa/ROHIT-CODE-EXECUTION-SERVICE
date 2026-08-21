@@ -1,37 +1,47 @@
-const { startCppInteractive } = require("./dockerRunner");
-
-const {
-  startPythonInteractive,
-} = require("./pythonDockerRunner");
-
 const {
   startCInteractive,
+  runC,
 } = require("./cDockerRunner");
 
 const {
+  startCppInteractive,
+  runCppNormal,
+} = require("./cppDockerRunner");
+
+const {
+  startPythonInteractive,
+  runPython,
+} = require("./pythonDockerRunner");
+
+const {
   startJavaInteractive,
+  runJava,
 } = require("./javaDockerRunner");
 
 const {
   startJavaScriptInteractive,
+  runJavaScript,
 } = require("./javascriptDockerRunner");
 
 const {
   startGoInteractive,
+  runGo,
 } = require("./goDockerRunner");
 
 const {
   startPhpInteractive,
+  runPhp,
 } = require("./phpDockerRunner");
 
 const {
   startRustInteractive,
+  runRust,
 } = require("./rustDockerRunner");
 
 
-// =========================================
+// ============================================================
 // EXECUTE CODE
-// =========================================
+// ============================================================
 
 async function executeCode(
   language,
@@ -43,27 +53,35 @@ async function executeCode(
     .trim()
     .toLowerCase();
 
+  // ==========================================================
+  // VALIDATE CODE
+  // ==========================================================
+
   if (
     typeof code !== "string" ||
     !code.trim()
   ) {
+    if (handlers) {
+      handlers.onError?.("Code is required.");
+      return null;
+    }
+
     return {
       success: false,
       output: "Code is required.",
     };
   }
 
-
-  // =========================================
+  // ==========================================================
   // INTERACTIVE EXECUTION
-  // =========================================
+  // ==========================================================
 
   if (handlers) {
     switch (normalizedLanguage) {
 
-      // =====================================
+      // ------------------------------------------------------
       // C
-      // =====================================
+      // ------------------------------------------------------
 
       case "c":
         return startCInteractive(
@@ -71,10 +89,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // C++
-      // =====================================
+      // ------------------------------------------------------
 
       case "cpp":
       case "c++":
@@ -83,10 +100,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // PYTHON
-      // =====================================
+      // ------------------------------------------------------
 
       case "python":
       case "python3":
@@ -95,10 +111,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // JAVA
-      // =====================================
+      // ------------------------------------------------------
 
       case "java":
         return startJavaInteractive(
@@ -106,10 +121,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // JAVASCRIPT
-      // =====================================
+      // ------------------------------------------------------
 
       case "javascript":
       case "js":
@@ -120,10 +134,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // GO
-      // =====================================
+      // ------------------------------------------------------
 
       case "go":
         return startGoInteractive(
@@ -131,10 +144,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // PHP
-      // =====================================
+      // ------------------------------------------------------
 
       case "php":
         return startPhpInteractive(
@@ -142,10 +154,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
+      // ------------------------------------------------------
       // RUST
-      // =====================================
+      // ------------------------------------------------------
 
       case "rust":
         return startRustInteractive(
@@ -153,10 +164,9 @@ async function executeCode(
           handlers,
         );
 
-
-      // =====================================
-      // DEFAULT
-      // =====================================
+      // ------------------------------------------------------
+      // UNKNOWN
+      // ------------------------------------------------------
 
       default:
         handlers.onError?.(
@@ -167,81 +177,100 @@ async function executeCode(
     }
   }
 
-
-  // =========================================
+  // ==========================================================
   // NORMAL EXECUTION
-  // =========================================
+  // ==========================================================
 
   switch (normalizedLanguage) {
 
-    case "c":
-      return {
-        success: false,
-        output:
-          "Normal C execution is not available. Use interactive execution.",
-      };
+    // --------------------------------------------------------
+    // C
+    // --------------------------------------------------------
 
+    case "c":
+      return runC(
+        code,
+        input,
+      );
+
+    // --------------------------------------------------------
+    // C++
+    // --------------------------------------------------------
 
     case "cpp":
     case "c++":
-      return {
-        success: false,
-        output:
-          "Normal C++ execution is not available. Use interactive execution.",
-      };
+      return runCppNormal(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // PYTHON
+    // --------------------------------------------------------
 
     case "python":
     case "python3":
-      return {
-        success: false,
-        output:
-          "Normal Python execution is not available. Use interactive execution.",
-      };
+      return runPython(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // JAVA
+    // --------------------------------------------------------
 
     case "java":
-      return {
-        success: false,
-        output:
-          "Normal Java execution is not available. Use interactive execution.",
-      };
+      return runJava(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // JAVASCRIPT
+    // --------------------------------------------------------
 
     case "javascript":
     case "js":
     case "node":
     case "nodejs":
-      return {
-        success: false,
-        output:
-          "Normal JavaScript execution is not available. Use interactive execution.",
-      };
+      return runJavaScript(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // GO
+    // --------------------------------------------------------
 
     case "go":
-      return {
-        success: false,
-        output:
-          "Normal Go execution is not available. Use interactive execution.",
-      };
+      return runGo(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // PHP
+    // --------------------------------------------------------
 
     case "php":
-      return {
-        success: false,
-        output:
-          "Normal PHP execution is not available. Use interactive execution.",
-      };
+      return runPhp(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // RUST
+    // --------------------------------------------------------
 
     case "rust":
-      return {
-        success: false,
-        output:
-          "Normal Rust execution is not available. Use interactive execution.",
-      };
+      return runRust(
+        code,
+        input,
+      );
 
+    // --------------------------------------------------------
+    // UNKNOWN
+    // --------------------------------------------------------
 
     default:
       return {
@@ -252,5 +281,9 @@ async function executeCode(
   }
 }
 
+
+// ============================================================
+// EXPORT
+// ============================================================
 
 module.exports = executeCode;

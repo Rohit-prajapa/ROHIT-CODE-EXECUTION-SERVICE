@@ -3,181 +3,101 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { v4: uuidv4 } = require("uuid");
 
-const PHP_IMAGE = "php:8.4-cli-alpine";
 const EXECUTION_TIMEOUT = 10000;
 
-// =========================================
-// INTERACTIVE PHP
-// =========================================
+// ============================================================
+// PHP COMMAND
+// ============================================================
 
-function startPhpInteractive(
-  code,
-  handlers = {},
-) {
-  const {
-    onOutput = () => {},
-    onExit = () => {},
-    onError = () => {},
-  } = handlers;
+const PHP_COMMAND =
+  process.platform === "win32"
+    ? "php.exe"
+    : "php";
 
-  return createPhpProcess({
-    code,
-    input: "",
-    interactive: true,
-    onOutput,
-    onExit,
-    onError,
-  });
-}
+// ============================================================
+// CREATE TEMP PHP FILE
+// ============================================================
 
-// =========================================
-// NORMAL PHP
-// =========================================
-
-function runPhp(code, input = "") {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-
-    const controller = createPhpProcess({
-      code,
-      input,
-      interactive: false,
-
-      onOutput: (data) => {
-        stdout += String(data);
-      },
-
-      onExit: (exitCode) => {
-        resolve({
-          success: exitCode === 0,
-          output:
-            stdout ||
-            stderr ||
-            `Process exited with code ${exitCode}.`,
-        });
-      },
-
-      onError: (error) => {
-        resolve({
-          success: false,
-          output: String(error),
-        });
-      },
-    });
-
-    if (!controller) {
-      resolve({
-        success: false,
-        output: "Could not start PHP process.",
-      });
-    }
-  });
-}
-
-// =========================================
-// CREATE PHP PROCESS
-// =========================================
-
-function createPhpProcess({
-  code,
-  input = "",
-  interactive = true,
-  onOutput = () => {},
-  onExit = () => {},
-  onError = () => {},
-}) {
+function createPhpTemp(code) {
   if (
     typeof code !== "string" ||
     !code.trim()
   ) {
-    onError("No PHP code provided.");
-    return null;
+    throw new Error("No PHP code provided.");
   }
 
   const id = uuidv4();
 
   const tempDir = path.join(
     __dirname,
-    "docker-temp",
+    "php-temp",
     `php-${id}`,
   );
+
+  fs.mkdirSync(tempDir, {
+    recursive: true,
+  });
 
   const sourceFile = path.join(
     tempDir,
     "main.php",
   );
 
-  // =========================================
-  // PREPARE FILE
-  // =========================================
+  fs.writeFileSync(
+    sourceFile,
+    code,
+    "utf8",
+  );
 
+  return tempDir;
+}
+
+// ============================================================
+// CLEANUP
+// ============================================================
+
+function cleanup(tempDir) {
   try {
-    fs.mkdirSync(tempDir, {
-      recursive: true,
-    });
-
-    fs.writeFileSync(
-      sourceFile,
-      code,
-      "utf8",
-    );
+    if (
+      tempDir &&
+      fs.existsSync(tempDir)
+    ) {
+      fs.rmSync(tempDir, {
+        recursive: true,
+        force: true,
+      });
+    }
   } catch (error) {
-    cleanup(tempDir);
-
-    onError(
-      `Could not prepare PHP file: ${error.message}`,
+    console.error(
+      "PHP cleanup error:",
+      error.message,
     );
-
-    return null;
   }
+}
 
-  // =========================================
-  // DOCKER
-  // =========================================
+// ============================================================
+// START PHP PROCESS
+// ============================================================
 
-  const dockerArgs = [
-    "run",
-    "--rm",
-    "-i",
-
-    // Resource limits
-    "--memory=256m",
-    "--cpus=0.5",
-    "--pids-limit=50",
-
-    // Security
-    "--network=none",
-    "--cap-drop=ALL",
-    "--security-opt=no-new-privileges",
-
-    // Temporary filesystem
-    "--tmpfs",
-    "/tmp:rw,noexec,nosuid,size=32m",
-
-    // Source
-    "-v",
-    `${tempDir}:/code:rw`,
-
-    // Working directory
-    "-w",
-    "/code",
-
-    // Image
-    PHP_IMAGE,
-
-    "php",
-    "-d",
-    "display_errors=1",
-    "-d",
-    "display_startup_errors=1",
-    "main.php",
-  ];
-
+function startPhpProcess({
+  tempDir,
+  input = "",
+  interactive = false,
+  onOutput = () => {},
+  onExit = () => {},
+  onError = () => {},
+}) {
   const phpProcess = spawn(
-    "docker",
-    dockerArgs,
+    PHP_COMMAND,
+    [
+      "-d",
+      "display_errors=1",
+      "-d",
+      "display_startup_errors=1",
+      "main.php",
+    ],
     {
+      cwd: tempDir,
       windowsHide: true,
       stdio: [
         "pipe",
@@ -191,9 +111,9 @@ function createPhpProcess({
   let stdout = "";
   let stderr = "";
 
-  // =========================================
+  // ==========================================================
   // TIMEOUT
-  // =========================================
+  // ==========================================================
 
   const timeout = setTimeout(() => {
     if (finished) return;
@@ -204,11 +124,11 @@ function createPhpProcess({
       phpProcess.kill("SIGKILL");
     } catch {}
 
-    cleanup(tempDir);
-
     onOutput(
-      "\r\n⏱ Program timed out after 10 seconds.\r\n",
+      "\r\n⏱ PHP program timed out after 10 seconds.\r\n",
     );
+
+    cleanup(tempDir);
 
     onExit(
       124,
@@ -217,9 +137,9 @@ function createPhpProcess({
     );
   }, EXECUTION_TIMEOUT);
 
-  // =========================================
+  // ==========================================================
   // STDOUT
-  // =========================================
+  // ==========================================================
 
   phpProcess.stdout.on(
     "data",
@@ -234,9 +154,9 @@ function createPhpProcess({
     },
   );
 
-  // =========================================
+  // ==========================================================
   // STDERR
-  // =========================================
+  // ==========================================================
 
   phpProcess.stderr.on(
     "data",
@@ -251,9 +171,9 @@ function createPhpProcess({
     },
   );
 
-  // =========================================
+  // ==========================================================
   // PROCESS ERROR
-  // =========================================
+  // ==========================================================
 
   phpProcess.on(
     "error",
@@ -267,14 +187,14 @@ function createPhpProcess({
 
       onError(
         error.message ||
-          "Could not start Docker.",
+          "Could not start PHP.",
       );
     },
   );
 
-  // =========================================
+  // ==========================================================
   // PROCESS CLOSE
-  // =========================================
+  // ==========================================================
 
   phpProcess.on(
     "close",
@@ -287,44 +207,49 @@ function createPhpProcess({
       cleanup(tempDir);
 
       onExit(
-        exitCode,
+        exitCode === null
+          ? 0
+          : exitCode,
         stdout,
         stderr,
       );
     },
   );
 
-  // =========================================
-  // NORMAL INPUT
-  // =========================================
+  // ==========================================================
+  // NORMAL EXECUTION INPUT
+  // ==========================================================
 
   if (!interactive) {
-    const programInput =
-      typeof input === "string"
-        ? input
-        : String(input ?? "");
-
     try {
       if (
         phpProcess.stdin &&
-        !phpProcess.stdin.destroyed
+        !phpProcess.stdin.destroyed &&
+        !phpProcess.stdin.writableEnded
       ) {
         phpProcess.stdin.write(
-          programInput,
+          String(input ?? ""),
         );
 
         phpProcess.stdin.end();
       }
     } catch (error) {
-      onError(
-        `Could not send input: ${error.message}`,
-      );
+      if (!finished) {
+        finished = true;
+
+        clearTimeout(timeout);
+        cleanup(tempDir);
+
+        onError(
+          `Could not send PHP input: ${error.message}`,
+        );
+      }
     }
   }
 
-  // =========================================
+  // ==========================================================
   // CONTROLLER
-  // =========================================
+  // ==========================================================
 
   return {
     writeInput(input) {
@@ -344,7 +269,27 @@ function createPhpProcess({
         );
       } catch (error) {
         onError(
-          `Could not send input: ${error.message}`,
+          `Could not send PHP input: ${error.message}`,
+        );
+      }
+    },
+
+    endInput() {
+      if (finished) return;
+
+      if (
+        !phpProcess.stdin ||
+        phpProcess.stdin.destroyed ||
+        phpProcess.stdin.writableEnded
+      ) {
+        return;
+      }
+
+      try {
+        phpProcess.stdin.end();
+      } catch (error) {
+        onError(
+          `Could not close PHP input: ${error.message}`,
         );
       }
     },
@@ -365,29 +310,100 @@ function createPhpProcess({
   };
 }
 
-// =========================================
-// CLEANUP
-// =========================================
+// ============================================================
+// NORMAL PHP EXECUTION
+// ============================================================
 
-function cleanup(tempDir) {
-  try {
-    if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, {
-        recursive: true,
-        force: true,
+function runPhp(
+  code,
+  input = "",
+) {
+  return new Promise((resolve) => {
+    let tempDir;
+
+    try {
+      tempDir = createPhpTemp(code);
+    } catch (error) {
+      resolve({
+        success: false,
+        output:
+          `Could not prepare PHP file: ${error.message}`,
       });
+
+      return;
     }
-  } catch (error) {
-    console.error(
-      "PHP Docker cleanup error:",
-      error.message,
-    );
-  }
+
+    startPhpProcess({
+      tempDir,
+      input,
+      interactive: false,
+
+      onOutput: () => {},
+
+      onExit: (
+        exitCode,
+        stdout,
+        stderr,
+      ) => {
+        resolve({
+          success: exitCode === 0,
+          output:
+            stdout ||
+            stderr ||
+            `PHP program exited with code ${exitCode}.`,
+        });
+      },
+
+      onError: (error) => {
+        cleanup(tempDir);
+
+        resolve({
+          success: false,
+          output: String(error),
+        });
+      },
+    });
+  });
 }
 
-// =========================================
+// ============================================================
+// INTERACTIVE PHP
+// ============================================================
+
+function startPhpInteractive(
+  code,
+  handlers = {},
+) {
+  const {
+    onOutput = () => {},
+    onExit = () => {},
+    onError = () => {},
+  } = handlers;
+
+  let tempDir;
+
+  try {
+    tempDir = createPhpTemp(code);
+  } catch (error) {
+    onError(
+      `Could not prepare PHP file: ${error.message}`,
+    );
+
+    return null;
+  }
+
+  return startPhpProcess({
+    tempDir,
+    interactive: true,
+    onOutput,
+    onExit,
+    onError,
+  });
+}
+
+// ============================================================
 // EXPORT
-// =========================================
+// ============================================================
 
 module.exports = {
   startPhpInteractive,
