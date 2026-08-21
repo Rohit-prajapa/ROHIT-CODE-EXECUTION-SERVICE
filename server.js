@@ -1227,10 +1227,11 @@ function startNativeInteractiveProcess({
     config.run.slice(1);
 
   const nativeLanguages = [
-    "c",
-    "cpp",
-    "c++",
-  ];
+  "c",
+  "cpp",
+  "c++",
+  "go",
+];
 
   // -------------------------------------------------------
   // NATIVE COMPILED EXECUTABLE
