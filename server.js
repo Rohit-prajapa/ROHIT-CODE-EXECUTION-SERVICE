@@ -227,22 +227,22 @@ const LANGUAGE_CONFIG = {
   // GO
   // =======================================================
 
-  go: {
-    extension: "go",
-    type: "native",
+ go: {
+  extension: "go",
+  type: "native",
 
-    compile: [
-      "go",
-      "build",
-      "-p",
-      "1",
-      "-o",
-      "main",
-      "main.go",
-    ],
+  compile: [
+    "go",
+    "build",
+    "-p",
+    "1",
+    "-o",
+    "main",
+    "main.go",
+  ],
 
-    run: ["./main"],
-  },
+  run: ["main"],
+},
 
   // =======================================================
   // PHP
