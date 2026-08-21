@@ -180,20 +180,20 @@ const LANGUAGE_CONFIG = {
   // JAVA
   // =======================================================
 
-  java: {
-    extension: "java",
-    type: "native",
+ java: {
+  extension: "java",
+  type: "native",
 
-    compile: [
-      "javac",
-      "Main.java",
-    ],
+  compile: [
+    "javac",
+    "main.java",
+  ],
 
-    run: [
-      "java",
-      "Main",
-    ],
-  },
+  run: [
+    "java",
+    "main",
+  ],
+},
 
   // =======================================================
   // PYTHON
