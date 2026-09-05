@@ -3,40 +3,49 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { v4: uuidv4 } = require("uuid");
 
+const JAVA_IMAGE = "eclipse-temurin:21-jdk";
 const EXECUTION_TIMEOUT = 10000;
 
-// ============================================================
-// PLATFORM COMMANDS
-// ============================================================
+// =========================================
+// NORMALIZE JAVA FILE NAME
+// =========================================
 
-const JAVAC_COMMAND =
-  process.platform === "win32"
-    ? "javac.exe"
-    : "javac";
+function normalizeJavaFileName(fileName = "Main.java") {
+  let name = path.basename(String(fileName || "Main.java").trim());
 
-const JAVA_COMMAND =
-  process.platform === "win32"
-    ? "java.exe"
-    : "java";
+  if (!name) {
+    name = "Main.java";
+  }
 
-// ============================================================
-// CREATE TEMP JAVA FILE
-// ============================================================
+  if (!name.toLowerCase().endsWith(".java")) {
+    name += ".java";
+  }
 
-function createJavaTemp(code) {
-  if (
-    typeof code !== "string" ||
-    !code.trim()
-  ) {
+  return name;
+}
+
+// =========================================
+// CREATE JAVA TEMP FILE
+// =========================================
+
+function createJavaTemp(code, fileName = "Main.java") {
+  if (typeof code !== "string" || !code.trim()) {
     throw new Error("No Java code provided.");
   }
+
+  const safeFileName = normalizeJavaFileName(fileName);
+
+  const className = path.basename(
+    safeFileName,
+    ".java"
+  );
 
   const id = uuidv4();
 
   const tempDir = path.join(
     __dirname,
-    "java-temp",
-    `java-${id}`,
+    "docker-temp",
+    `java-${id}`
   );
 
   fs.mkdirSync(tempDir, {
@@ -45,144 +54,130 @@ function createJavaTemp(code) {
 
   const sourceFile = path.join(
     tempDir,
-    "Main.java",
+    safeFileName
   );
 
   fs.writeFileSync(
     sourceFile,
     code,
-    "utf8",
+    "utf8"
   );
 
-  return tempDir;
+  return {
+    tempDir,
+    fileName: safeFileName,
+    className,
+  };
 }
 
-// ============================================================
-// CLEANUP
-// ============================================================
+// =========================================
+// BUILD DOCKER ARGUMENTS
+// =========================================
 
-function cleanup(tempDir) {
-  try {
-    if (
-      tempDir &&
-      fs.existsSync(tempDir)
-    ) {
-      fs.rmSync(tempDir, {
-        recursive: true,
-        force: true,
-      });
-    }
-  } catch (error) {
-    console.error(
-      "Java cleanup error:",
-      error.message,
-    );
-  }
-}
-
-// ============================================================
-// COMPILE JAVA
-// ============================================================
-
-function compileJava(
+function buildDockerArgs(
   tempDir,
-  onSuccess,
-  onError,
+  fileName,
+  className
 ) {
-  const compileProcess = spawn(
-    JAVAC_COMMAND,
-    [
-      "-encoding",
-      "UTF-8",
-      "Main.java",
-    ],
-    {
-      cwd: tempDir,
-      windowsHide: true,
-      stdio: [
-        "ignore",
-        "pipe",
-        "pipe",
-      ],
-    },
-  );
+  return [
+    "run",
+    "--rm",
+    "-i",
 
-  let stdout = "";
-  let stderr = "";
+    // Resource limits
+    "--memory=256m",
+    "--cpus=0.5",
+    "--pids-limit=50",
 
-  compileProcess.stdout.on(
-    "data",
-    (data) => {
-      stdout += data.toString();
-    },
-  );
+    // Security
+    "--network=none",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
 
-  compileProcess.stderr.on(
-    "data",
-    (data) => {
-      stderr += data.toString();
-    },
-  );
+    // Temporary filesystem
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=32m",
 
-  compileProcess.on(
-    "error",
-    (error) => {
-      onError(
-        error.message ||
-          "Could not start javac.",
-      );
-    },
-  );
+    // Source
+    "-v",
+    `${tempDir}:/code:rw`,
 
-  compileProcess.on(
-    "close",
-    (exitCode) => {
-      if (exitCode === 0) {
-        onSuccess();
-        return;
-      }
+    // Working directory
+    "-w",
+    "/code",
 
-      onError(
-        stderr ||
-          stdout ||
-          `Java compilation failed with exit code ${exitCode}.`,
-      );
-    },
-  );
+    JAVA_IMAGE,
+
+    "sh",
+    "-c",
+
+    // Compile + run using actual filename
+    `javac "${fileName}" && java "${className}"`,
+  ];
 }
 
-// ============================================================
-// START JAVA PROCESS
-// ============================================================
+// =========================================
+// INTERACTIVE JAVA
+// =========================================
 
-function startJavaProcess({
-  tempDir,
-  input = "",
-  interactive = false,
-  onOutput = () => {},
-  onExit = () => {},
-  onError = () => {},
-}) {
+function startJavaInteractive(
+  code,
+  handlers = {},
+  fileName = "Main.java"
+) {
+  const {
+    onOutput = () => {},
+    onExit = () => {},
+    onError = () => {},
+  } = handlers;
+
+  let javaFile;
+
+  try {
+    javaFile = createJavaTemp(
+      code,
+      fileName
+    );
+  } catch (error) {
+    onError(
+      `Could not prepare Java file: ${error.message}`
+    );
+
+    return null;
+  }
+
+  const {
+    tempDir,
+    fileName: actualFileName,
+    className,
+  } = javaFile;
+
+  const dockerArgs = buildDockerArgs(
+    tempDir,
+    actualFileName,
+    className
+  );
+
   const javaProcess = spawn(
-    JAVA_COMMAND,
-    [
-      "-Dfile.encoding=UTF-8",
-      "Main",
-    ],
+    "docker",
+    dockerArgs,
     {
-      cwd: tempDir,
       windowsHide: true,
       stdio: [
         "pipe",
         "pipe",
         "pipe",
       ],
-    },
+    }
   );
 
   let finished = false;
   let stdout = "";
   let stderr = "";
+
+  // =========================================
+  // TIMEOUT
+  // =========================================
 
   const timeout = setTimeout(() => {
     if (finished) return;
@@ -193,22 +188,22 @@ function startJavaProcess({
       javaProcess.kill("SIGKILL");
     } catch {}
 
-    onOutput(
-      "\r\n⏱ Java program timed out after 10 seconds.\r\n",
-    );
-
     cleanup(tempDir);
+
+    onOutput(
+      "\r\n⏱ Program timed out after 10 seconds.\r\n"
+    );
 
     onExit(
       124,
       stdout,
-      stderr,
+      stderr
     );
   }, EXECUTION_TIMEOUT);
 
-  // ==========================================================
+  // =========================================
   // STDOUT
-  // ==========================================================
+  // =========================================
 
   javaProcess.stdout.on(
     "data",
@@ -220,12 +215,12 @@ function startJavaProcess({
       stdout += text;
 
       onOutput(text);
-    },
+    }
   );
 
-  // ==========================================================
+  // =========================================
   // STDERR
-  // ==========================================================
+  // =========================================
 
   javaProcess.stderr.on(
     "data",
@@ -237,12 +232,12 @@ function startJavaProcess({
       stderr += text;
 
       onOutput(text);
-    },
+    }
   );
 
-  // ==========================================================
-  // ERROR
-  // ==========================================================
+  // =========================================
+  // PROCESS ERROR
+  // =========================================
 
   javaProcess.on(
     "error",
@@ -252,18 +247,19 @@ function startJavaProcess({
       finished = true;
 
       clearTimeout(timeout);
+
       cleanup(tempDir);
 
       onError(
         error.message ||
-          "Could not start Java.",
+          "Could not start Docker."
       );
-    },
+    }
   );
 
-  // ==========================================================
-  // CLOSE
-  // ==========================================================
+  // =========================================
+  // PROCESS CLOSE
+  // =========================================
 
   javaProcess.on(
     "close",
@@ -273,49 +269,20 @@ function startJavaProcess({
       finished = true;
 
       clearTimeout(timeout);
+
       cleanup(tempDir);
 
       onExit(
         exitCode,
         stdout,
-        stderr,
+        stderr
       );
-    },
+    }
   );
 
-  // ==========================================================
-  // NORMAL EXECUTION INPUT
-  // ==========================================================
-
-  if (!interactive) {
-    try {
-      if (
-        javaProcess.stdin &&
-        !javaProcess.stdin.destroyed
-      ) {
-        javaProcess.stdin.write(
-          String(input ?? ""),
-        );
-
-        javaProcess.stdin.end();
-      }
-    } catch (error) {
-      if (!finished) {
-        finished = true;
-
-        clearTimeout(timeout);
-        cleanup(tempDir);
-
-        onError(
-          `Could not send Java input: ${error.message}`,
-        );
-      }
-    }
-  }
-
-  // ==========================================================
+  // =========================================
   // CONTROLLER
-  // ==========================================================
+  // =========================================
 
   return {
     writeInput(input) {
@@ -331,11 +298,11 @@ function startJavaProcess({
 
       try {
         javaProcess.stdin.write(
-          String(input),
+          String(input)
         );
       } catch (error) {
         onError(
-          `Could not send Java input: ${error.message}`,
+          `Could not send input: ${error.message}`
         );
       }
     },
@@ -356,153 +323,259 @@ function startJavaProcess({
   };
 }
 
-// ============================================================
-// INTERACTIVE JAVA
-// ============================================================
-
-function startJavaInteractive(
-  code,
-  handlers = {},
-) {
-  const {
-    onOutput = () => {},
-    onExit = () => {},
-    onError = () => {},
-  } = handlers;
-
-  let tempDir;
-
-  try {
-    tempDir = createJavaTemp(code);
-  } catch (error) {
-    onError(
-      `Could not prepare Java file: ${error.message}`,
-    );
-
-    return null;
-  }
-
-  // ==========================================================
-  // COMPILE FIRST
-  // ==========================================================
-
-  let controller = null;
-
-  compileJava(
-    tempDir,
-    () => {
-      controller = startJavaProcess({
-        tempDir,
-        interactive: true,
-        onOutput,
-        onExit,
-        onError,
-      });
-    },
-    (error) => {
-      cleanup(tempDir);
-
-      onError(
-        `Java compilation error:\n${error}`,
-      );
-    },
-  );
-
-  // ==========================================================
-  // CONTROLLER
-  // ==========================================================
-
-  return {
-    writeInput(input) {
-      if (controller) {
-        controller.writeInput(input);
-      }
-    },
-
-    stop() {
-      if (controller) {
-        controller.stop();
-      } else {
-        cleanup(tempDir);
-      }
-    },
-  };
-}
-
-// ============================================================
+// =========================================
 // NORMAL JAVA
-// ============================================================
+// =========================================
 
 function runJava(
   code,
   input = "",
+  fileName = "Main.java"
 ) {
   return new Promise((resolve) => {
-    let tempDir;
+    let stdout = "";
+    let stderr = "";
 
-    try {
-      tempDir = createJavaTemp(code);
-    } catch (error) {
-      resolve({
-        success: false,
-        output:
-          `Could not prepare Java file: ${error.message}`,
-      });
+    const controller = createJavaProcess({
+      code,
+      input,
+      fileName,
 
-      return;
-    }
+      onOutput: (data) => {
+        stdout += String(data);
+      },
 
-    compileJava(
-      tempDir,
-      () => {
-        startJavaProcess({
-          tempDir,
-          input,
-          interactive: false,
-
-          onOutput: () => {},
-
-          onExit: (
-            exitCode,
-            stdout,
-            stderr,
-          ) => {
-            resolve({
-              success: exitCode === 0,
-              output:
-                stdout ||
-                stderr ||
-                `Java program exited with code ${exitCode}.`,
-            });
-          },
-
-          onError: (error) => {
-            cleanup(tempDir);
-
-            resolve({
-              success: false,
-              output: String(error),
-            });
-          },
+      onExit: (exitCode) => {
+        resolve({
+          success: exitCode === 0,
+          output:
+            stdout ||
+            stderr ||
+            `Process exited with code ${exitCode}.`,
         });
       },
 
-      (error) => {
-        cleanup(tempDir);
-
+      onError: (error) => {
         resolve({
           success: false,
-          output:
-            `Java compilation error:\n${error}`,
+          output: String(error),
         });
       },
-    );
+    });
+
+    if (!controller) {
+      resolve({
+        success: false,
+        output: "Could not start Java process.",
+      });
+    }
   });
 }
 
-// ============================================================
+// =========================================
+// NORMAL JAVA PROCESS
+// =========================================
+
+function createJavaProcess({
+  code,
+  input = "",
+  fileName = "Main.java",
+  onOutput = () => {},
+  onExit = () => {},
+  onError = () => {},
+}) {
+  let javaFile;
+
+  try {
+    javaFile = createJavaTemp(
+      code,
+      fileName
+    );
+  } catch (error) {
+    onError(error.message);
+    return null;
+  }
+
+  const {
+    tempDir,
+    fileName: actualFileName,
+    className,
+  } = javaFile;
+
+  const dockerArgs = buildDockerArgs(
+    tempDir,
+    actualFileName,
+    className
+  );
+
+  const javaProcess = spawn(
+    "docker",
+    dockerArgs,
+    {
+      windowsHide: true,
+      stdio: [
+        "pipe",
+        "pipe",
+        "pipe",
+      ],
+    }
+  );
+
+  let finished = false;
+
+  // =========================================
+  // TIMEOUT
+  // =========================================
+
+  const timeout = setTimeout(() => {
+    if (finished) return;
+
+    finished = true;
+
+    try {
+      javaProcess.kill("SIGKILL");
+    } catch {}
+
+    cleanup(tempDir);
+
+    onOutput(
+      "\r\n⏱ Java program timed out after 10 seconds.\r\n"
+    );
+
+    onExit(124);
+  }, EXECUTION_TIMEOUT);
+
+  // =========================================
+  // STDOUT
+  // =========================================
+
+  javaProcess.stdout.on(
+    "data",
+    (data) => {
+      if (!finished) {
+        onOutput(data.toString());
+      }
+    }
+  );
+
+  // =========================================
+  // STDERR
+  // =========================================
+
+  javaProcess.stderr.on(
+    "data",
+    (data) => {
+      if (!finished) {
+        onOutput(data.toString());
+      }
+    }
+  );
+
+  // =========================================
+  // PROCESS ERROR
+  // =========================================
+
+  javaProcess.on(
+    "error",
+    (error) => {
+      if (finished) return;
+
+      finished = true;
+
+      clearTimeout(timeout);
+
+      cleanup(tempDir);
+
+      onError(
+        error.message ||
+          "Could not start Docker."
+      );
+    }
+  );
+
+  // =========================================
+  // PROCESS CLOSE
+  // =========================================
+
+  javaProcess.on(
+    "close",
+    (exitCode) => {
+      if (finished) return;
+
+      finished = true;
+
+      clearTimeout(timeout);
+
+      cleanup(tempDir);
+
+      onExit(exitCode);
+    }
+  );
+
+  // =========================================
+  // SEND COMPLETE INPUT
+  // =========================================
+
+  try {
+    if (
+      javaProcess.stdin &&
+      !javaProcess.stdin.destroyed
+    ) {
+      javaProcess.stdin.write(
+        String(input ?? "")
+      );
+
+      javaProcess.stdin.end();
+    }
+  } catch (error) {
+    onError(
+      `Could not send input: ${error.message}`
+    );
+  }
+
+  return {
+    stop() {
+      if (finished) return;
+
+      finished = true;
+
+      clearTimeout(timeout);
+
+      try {
+        javaProcess.kill("SIGKILL");
+      } catch {}
+
+      cleanup(tempDir);
+    },
+  };
+}
+
+// =========================================
+// CLEANUP
+// =========================================
+
+function cleanup(tempDir) {
+  try {
+    if (
+      tempDir &&
+      fs.existsSync(tempDir)
+    ) {
+      fs.rmSync(tempDir, {
+        recursive: true,
+        force: true,
+      });
+    }
+  } catch (error) {
+    console.error(
+      "Java Docker cleanup error:",
+      error.message
+    );
+  }
+}
+
+// =========================================
 // EXPORT
-// ============================================================
+// =========================================
 
 module.exports = {
   startJavaInteractive,
