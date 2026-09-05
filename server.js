@@ -931,6 +931,7 @@ function startCSharpInteractiveProcess({ jobDirectory }) {
     env: {
       ...process.env,
       HOME: jobDirectory,
+      DOTNET_NOLOGO: "true",
     },
 
     shell: false,
