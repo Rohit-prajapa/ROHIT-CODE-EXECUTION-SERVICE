@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     php-cli \
     rustc \
     cargo \
+    dotnet-sdk-8.0 \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*

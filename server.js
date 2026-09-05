@@ -13,10 +13,6 @@ const PORT = process.env.PORT || 10001;
 const EXECUTION_TIMEOUT = 30000;
 const COMPILE_TIMEOUT = 60000;
 
-// =========================================================
-// PLATFORM
-// =========================================================
-
 const isWindows = process.platform === "win32";
 
 // =========================================================
@@ -27,7 +23,6 @@ const DOCKER_IMAGES = {
   go: "golang:1.24-alpine",
   php: "php:8.4-cli-alpine",
   rust: "rust:1.88-alpine",
-  csharp: "mcr.microsoft.com/dotnet/sdk:8.0",
 };
 
 // =========================================================
@@ -97,7 +92,7 @@ function resolvePtyExecutable(command) {
     }
   } catch (error) {
     console.error(
-      `❌ Could not resolve PTY executable "${command}":`,
+      `Could not resolve PTY executable "${command}":`,
       error.message,
     );
   }
@@ -130,10 +125,7 @@ app.get("/api/health", (req, res) => {
 // =========================================================
 
 const LANGUAGE_CONFIG = {
-  // =======================================================
   // C
-  // =======================================================
-
   c: {
     extension: "c",
     type: "native",
@@ -141,10 +133,7 @@ const LANGUAGE_CONFIG = {
     run: ["./main"],
   },
 
-  // =======================================================
   // C++
-  // =======================================================
-
   cpp: {
     extension: "cpp",
     type: "native",
@@ -152,10 +141,7 @@ const LANGUAGE_CONFIG = {
     run: ["./main"],
   },
 
-  // =======================================================
   // JAVA
-  // =======================================================
-
   java: {
     extension: "java",
     type: "native",
@@ -163,40 +149,35 @@ const LANGUAGE_CONFIG = {
     run: ["java", "main"],
   },
 
-  // =======================================================
   // PYTHON
-  // =======================================================
-
   python: {
     extension: "py",
     type: "native",
     run: ["python3", "main.py"],
   },
 
-  // =======================================================
   // JAVASCRIPT
-  // =======================================================
-
   javascript: {
     extension: "js",
     type: "native",
     run: ["node", "main.js"],
   },
 
-  // =======================================================
-  // PHP
-  // =======================================================
+  // GO
+  go: {
+    extension: "go",
+    type: "docker",
+    image: DOCKER_IMAGES.go,
+  },
 
+  // PHP
   php: {
     extension: "php",
     type: "native",
     run: ["php", "main.php"],
   },
 
-  // =======================================================
   // RUST
-  // =======================================================
-
   rust: {
     extension: "rs",
     type: "native",
@@ -204,14 +185,14 @@ const LANGUAGE_CONFIG = {
     run: ["./main"],
   },
 
-  // =======================================================
   // C#
-  // =======================================================
-
+  // IMPORTANT:
+  // C# is native because .NET 8 is installed in the
+  // CodeForge execution-service container.
   csharp: {
     extension: "cs",
-    type: "docker",
-    image: DOCKER_IMAGES.csharp,
+    type: "native",
+    run: ["dotnet", "run", "--project", "CodeForge.csproj"],
   },
 };
 
@@ -254,7 +235,7 @@ function getJavaClassName(fileName = "Main.java") {
 function createJobDirectory() {
   const jobId = crypto.randomUUID().replace(/-/g, "");
 
-  const jobDirectory = path.join(os.tmpdir(), `rohit-code-${jobId}`);
+  const jobDirectory = path.join(os.tmpdir(), `codeforge-${jobId}`);
 
   fs.mkdirSync(jobDirectory, {
     recursive: true,
@@ -303,19 +284,31 @@ function runNativeProcess(
     let stderr = "";
     let finished = false;
 
-    const child = spawn(command, args, {
-      cwd,
+    let child;
 
-      env: {
-        ...process.env,
-        HOME: cwd,
-        PYTHONUNBUFFERED: "1",
-      },
+    try {
+      child = spawn(command, args, {
+        cwd,
+        env: {
+          ...process.env,
+          HOME: cwd,
+          PYTHONUNBUFFERED: "1",
+        },
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      resolve({
+        success: false,
+        stdout,
+        stderr: error.message,
+        exitCode: 1,
+        timedOut: false,
+      });
 
-      shell: false,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+      return;
+    }
 
     const timer = setTimeout(() => {
       if (finished) {
@@ -411,6 +404,44 @@ function runNativeProcess(
     }
   });
 }
+
+// =========================================================
+// C# PROJECT FILE
+// =========================================================
+
+function createCSharpProject(jobDirectory) {
+  const csproj = path.join(jobDirectory, "CodeForge.csproj");
+
+  const projectFile = `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+   <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>`;
+
+  fs.writeFileSync(csproj, projectFile, "utf8");
+
+  return csproj;
+}
+
+// =========================================================
+// C# NORMAL EXECUTION
+// =========================================================
+
+function runCSharpProgram({ jobDirectory, input = "" }) {
+  const csproj = path.join(jobDirectory, "CodeForge.csproj");
+
+  return runNativeProcess(
+    "dotnet",
+    ["run", "--project", csproj],
+    jobDirectory,
+    input,
+    EXECUTION_TIMEOUT,
+  );
+}
+
 // =========================================================
 // DOCKER NORMAL EXECUTION
 // =========================================================
@@ -424,37 +455,6 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
     let command;
 
     switch (language) {
-      case "c":
-        command =
-          "gcc main.c -O2 -o /code/main " +
-          "&& chmod 755 /code/main " +
-          "&& /code/main";
-        break;
-
-      case "cpp":
-      case "c++":
-        command =
-          "g++ main.cpp -std=c++17 -O2 -o /code/main " +
-          "&& chmod 755 /code/main " +
-          "&& /code/main";
-        break;
-
-      case "java":
-        command = "javac Main.java && java Main";
-        break;
-
-      case "python":
-      case "python3":
-        command = "python3 -u main.py";
-        break;
-
-      case "javascript":
-      case "js":
-      case "node":
-      case "nodejs":
-        command = "node main.js";
-        break;
-
       case "go":
       case "golang":
         command =
@@ -464,30 +464,6 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
           "go build -p 1 -o /code/main main.go " +
           "&& chmod 755 /code/main " +
           "&& /code/main";
-        break;
-
-      case "php":
-        command =
-          "php " +
-          "-d display_errors=1 " +
-          "-d display_startup_errors=1 " +
-          "main.php";
-        break;
-
-      case "rust":
-        command =
-          "rustc main.rs -O -o /code/main " +
-          "&& chmod 755 /code/main " +
-          "&& /code/main";
-        break;
-
-      case "csharp":
-        command =
-          "dotnet new console --force -o /code/app --no-restore " +
-          "&& cp main.cs /code/app/Program.cs " +
-          "&& dotnet build /code/app/App.csproj --nologo " +
-          "-p:RestoreIgnoreFailedSources=true -o /code/app/out " +
-          "&& dotnet /code/app/out/App.dll";
         break;
 
       default:
@@ -530,7 +506,6 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
     ];
 
     console.log("🐳 Docker execution:", language, image);
-    console.log("🐳 Docker command:", command);
 
     const dockerProcess = spawn("docker", dockerArgs, {
       windowsHide: true,
@@ -543,8 +518,6 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
       }
 
       finished = true;
-
-      console.log(`⏱ ${language} execution timed out.`);
 
       try {
         dockerProcess.kill("SIGKILL");
@@ -560,19 +533,15 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
     }, EXECUTION_TIMEOUT);
 
     dockerProcess.stdout.on("data", (data) => {
-      if (finished) {
-        return;
+      if (!finished) {
+        stdout += data.toString();
       }
-
-      stdout += data.toString();
     });
 
     dockerProcess.stderr.on("data", (data) => {
-      if (finished) {
-        return;
+      if (!finished) {
+        stderr += data.toString();
       }
-
-      stderr += data.toString();
     });
 
     dockerProcess.on("error", (error) => {
@@ -582,8 +551,6 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
 
       finished = true;
       clearTimeout(timer);
-
-      console.error(`❌ Docker ${language} error:`, error.message);
 
       resolve({
         success: false,
@@ -602,13 +569,7 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
       finished = true;
       clearTimeout(timer);
 
-      const finalExitCode =
-        typeof exitCode === "number" ? exitCode : 1;
-
-      console.log(
-        `✅ ${language} Docker process exited:`,
-        finalExitCode,
-      );
+      const finalExitCode = typeof exitCode === "number" ? exitCode : 1;
 
       resolve({
         success: finalExitCode === 0,
@@ -626,6 +587,7 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
         !dockerProcess.stdin.writableEnded
       ) {
         dockerProcess.stdin.write(String(input ?? ""));
+
         dockerProcess.stdin.end();
       }
     } catch (error) {
@@ -655,11 +617,7 @@ function runDockerProgram({ image, language, jobDirectory, input = "" }) {
 // COMPILE NATIVE SOURCE
 // =========================================================
 
-async function compileNativeSource(
-  config,
-  jobDirectory,
-  compileConfig = null,
-) {
+async function compileNativeSource(config, jobDirectory, compileConfig = null) {
   if (!config.compile) {
     return {
       success: true,
@@ -668,11 +626,7 @@ async function compileNativeSource(
 
   const compileCommand = compileConfig || config.compile;
 
-  console.log(
-    "🔨 Compile:",
-    compileCommand[0],
-    compileCommand.slice(1),
-  );
+  console.log("🔨 Compile:", compileCommand[0], compileCommand.slice(1));
 
   const result = await runNativeProcess(
     compileCommand[0],
@@ -685,10 +639,7 @@ async function compileNativeSource(
   if (!result.success) {
     return {
       success: false,
-      output:
-        result.stderr ||
-        result.stdout ||
-        "Compilation failed.",
+      output: result.stderr || result.stdout || "Compilation failed.",
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
@@ -706,19 +657,11 @@ async function compileNativeSource(
 // =========================================================
 
 app.post("/api/execute", async (req, res) => {
-  const {
-    language,
-    code,
-    input = "",
-    fileName = "",
-  } = req.body || {};
+  const { language, code, input = "", fileName = "" } = req.body || {};
 
   const normalizedLanguage = normalizeLanguage(language);
 
-  console.log(
-    "▶ Normal execution:",
-    normalizedLanguage,
-  );
+  console.log("▶ Normal execution:", normalizedLanguage);
 
   if (!normalizedLanguage) {
     return res.status(400).json({
@@ -751,9 +694,7 @@ app.post("/api/execute", async (req, res) => {
     jobDirectory = job.jobDirectory;
 
     const javaFileName =
-      normalizedLanguage === "java"
-        ? normalizeJavaFileName(fileName)
-        : null;
+      normalizedLanguage === "java" ? normalizeJavaFileName(fileName) : null;
 
     const sourceFile = path.join(
       jobDirectory,
@@ -761,6 +702,34 @@ app.post("/api/execute", async (req, res) => {
     );
 
     fs.writeFileSync(sourceFile, code, "utf8");
+
+    // =====================================================
+    // C# NATIVE EXECUTION
+    // =====================================================
+
+    if (normalizedLanguage === "csharp") {
+      createCSharpProject(jobDirectory);
+
+      const result = await runCSharpProgram({
+        jobDirectory,
+        input,
+      });
+
+      const output = result.stdout || result.stderr || "";
+
+      return res.json({
+        success: result.success,
+        output,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut || false,
+      });
+    }
+
+    // =====================================================
+    // DOCKER EXECUTION
+    // =====================================================
 
     if (config.type === "docker") {
       const result = await runDockerProgram({
@@ -782,10 +751,12 @@ app.post("/api/execute", async (req, res) => {
       });
     }
 
+    // =====================================================
+    // NATIVE COMPILATION
+    // =====================================================
+
     const compileConfig =
-      normalizedLanguage === "java"
-        ? ["javac", javaFileName]
-        : null;
+      normalizedLanguage === "java" ? ["javac", javaFileName] : null;
 
     const compileResult = await compileNativeSource(
       config,
@@ -797,15 +768,17 @@ app.post("/api/execute", async (req, res) => {
       return res.json({
         success: false,
         output: compileResult.output,
-        error:
-          compileResult.stderr ||
-          "Compilation failed.",
+        error: compileResult.stderr || "Compilation failed.",
         stdout: compileResult.stdout,
         stderr: compileResult.stderr,
         exitCode: compileResult.exitCode,
         timedOut: compileResult.timedOut || false,
       });
     }
+
+    // =====================================================
+    // NATIVE RUN
+    // =====================================================
 
     const runConfig =
       normalizedLanguage === "java"
@@ -835,14 +808,13 @@ app.post("/api/execute", async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      output:
-        error.message ||
-        "Execution service error.",
+      output: error.message || "Execution service error.",
     });
   } finally {
     cleanupDirectory(jobDirectory);
   }
 });
+
 // =========================================================
 // CREATE NATIVE PTY PROCESS
 // =========================================================
@@ -851,7 +823,6 @@ function startNativeInteractiveProcess({
   config,
   normalizedLanguage,
   jobDirectory,
-  processId,
 }) {
   let ptyCommand = config.run[0];
   let ptyArgs = config.run.slice(1);
@@ -862,29 +833,15 @@ function startNativeInteractiveProcess({
     const executableFile = isWindows ? "main.exe" : "main";
 
     ptyCommand = path.join(jobDirectory, executableFile);
-
     ptyArgs = [];
   }
 
-  // =======================================================
-  // JAVA
-  // =======================================================
-
-  if (
-    normalizedLanguage === "java" &&
-    config.__javaFileName
-  ) {
+  if (normalizedLanguage === "java" && config.__javaFileName) {
     ptyCommand = "java";
-    ptyArgs = [
-      getJavaClassName(config.__javaFileName),
-    ];
+    ptyArgs = [getJavaClassName(config.__javaFileName)];
   }
 
   ptyCommand = resolvePtyExecutable(ptyCommand);
-
-  console.log("🔧 PTY executable:", ptyCommand);
-
-  console.log("🔧 PTY args:", ptyArgs);
 
   const env = {
     ...process.env,
@@ -892,23 +849,17 @@ function startNativeInteractiveProcess({
     PYTHONUNBUFFERED: "1",
   };
 
-  const ptyProcess = pty.spawn(
-    ptyCommand,
-    ptyArgs,
-    {
-      name: "xterm-color",
-      cols: 120,
-      rows: 30,
-      cwd: jobDirectory,
-      env,
-    },
-  );
-
-  return ptyProcess;
+  return pty.spawn(ptyCommand, ptyArgs, {
+    name: "xterm-color",
+    cols: 120,
+    rows: 30,
+    cwd: jobDirectory,
+    env,
+  });
 }
 
 // =========================================================
-// CREATE DOCKER INTERACTIVE PROCESS
+// DOCKER INTERACTIVE PROCESS
 // =========================================================
 
 function startDockerInteractiveProcess({
@@ -918,10 +869,7 @@ function startDockerInteractiveProcess({
 }) {
   let command;
 
-  if (
-    normalizedLanguage === "go" ||
-    normalizedLanguage === "golang"
-  ) {
+  if (normalizedLanguage === "go" || normalizedLanguage === "golang") {
     command =
       "GOCACHE=/tmp/go-cache " +
       "GOMODCACHE=/tmp/go-mod-cache " +
@@ -929,24 +877,6 @@ function startDockerInteractiveProcess({
       "go build -p 1 -o /code/main main.go " +
       "&& chmod 755 /code/main " +
       "&& /code/main";
-  } else if (normalizedLanguage === "php") {
-    command =
-      "php " +
-      "-d display_errors=1 " +
-      "-d display_startup_errors=1 " +
-      "main.php";
-  } else if (normalizedLanguage === "rust") {
-    command =
-      "rustc main.rs -O -o /code/main " +
-      "&& chmod 755 /code/main " +
-      "&& /code/main";
-  } else if (normalizedLanguage === "csharp") {
-    command =
-      "dotnet new console --force -o /code/app --no-restore " +
-      "&& cp main.cs /code/app/Program.cs " +
-      "&& dotnet build /code/app/App.csproj --nologo " +
-      "-p:RestoreIgnoreFailedSources=true -o /code/app/out " +
-      "&& dotnet /code/app/out/App.dll";
   } else {
     throw new Error(
       `Docker interactive execution not configured for ${normalizedLanguage}.`,
@@ -980,10 +910,7 @@ function startDockerInteractiveProcess({
     command,
   ];
 
-  console.log(
-    "🐳 Starting Docker interactive:",
-    config.image,
-  );
+  console.log("🐳 Starting Docker interactive:", config.image);
 
   return spawn("docker", dockerArgs, {
     windowsHide: true,
@@ -992,277 +919,188 @@ function startDockerInteractiveProcess({
 }
 
 // =========================================================
+// C# INTERACTIVE PROCESS
+// =========================================================
+
+function startCSharpInteractiveProcess({ jobDirectory }) {
+  const csproj = path.join(jobDirectory, "CodeForge.csproj");
+
+  return spawn("dotnet", ["run", "--project", csproj], {
+    cwd: jobDirectory,
+
+    env: {
+      ...process.env,
+      HOME: jobDirectory,
+    },
+
+    shell: false,
+    windowsHide: true,
+
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+// =========================================================
 // INTERACTIVE START API
 // =========================================================
 
-app.post(
-  "/api/interactive/start",
-  async (req, res) => {
-    const {
-      language,
-      code,
-      fileName = "",
-    } = req.body || {};
+app.post("/api/interactive/start", async (req, res) => {
+  const { language, code, fileName = "" } = req.body || {};
 
-    console.log("================================");
+  console.log("================================");
 
-    console.log(
-      "▶ Interactive start request",
+  console.log("▶ Interactive start request");
+
+  console.log("Language:", language);
+
+  console.log("File name:", fileName);
+
+  console.log("Code length:", typeof code === "string" ? code.length : 0);
+
+  console.log("================================");
+
+  const normalizedLanguage = normalizeLanguage(language);
+
+  if (!normalizedLanguage) {
+    return res.status(400).json({
+      success: false,
+      message: "Language is required.",
+    });
+  }
+
+  if (typeof code !== "string" || !code.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Code is required.",
+    });
+  }
+
+  const config = LANGUAGE_CONFIG[normalizedLanguage];
+
+  if (!config) {
+    return res.status(400).json({
+      success: false,
+      message: `Language "${language}" is not supported.`,
+    });
+  }
+
+  let jobDirectory = null;
+
+  try {
+    const job = createJobDirectory();
+
+    const processId = job.jobId;
+
+    jobDirectory = job.jobDirectory;
+
+    const javaFileName =
+      normalizedLanguage === "java" ? normalizeJavaFileName(fileName) : null;
+
+    const sourceFile = path.join(
+      jobDirectory,
+      javaFileName || `main.${config.extension}`,
     );
 
-    console.log("Language:", language);
+    fs.writeFileSync(sourceFile, code, "utf8");
 
-    console.log("File name:", fileName);
+    console.log("📄 Source:", sourceFile);
 
-    console.log(
-      "Code length:",
-      typeof code === "string"
-        ? code.length
-        : 0,
-    );
+    // =====================================================
+    // C# NATIVE INTERACTIVE
+    // =====================================================
 
-    console.log("================================");
+    if (normalizedLanguage === "csharp") {
+      createCSharpProject(jobDirectory);
 
-    const normalizedLanguage =
-      normalizeLanguage(language);
-
-    if (!normalizedLanguage) {
-      return res.status(400).json({
-        success: false,
-        message: "Language is required.",
-      });
-    }
-
-    if (
-      typeof code !== "string" ||
-      !code.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Code is required.",
-      });
-    }
-
-    const config =
-      LANGUAGE_CONFIG[normalizedLanguage];
-
-    if (!config) {
-      return res.status(400).json({
-        success: false,
-        message:
-          `Language "${language}" is not supported.`,
-      });
-    }
-
-    let jobDirectory = null;
-
-    try {
-      const job = createJobDirectory();
-
-      const processId = job.jobId;
-
-      jobDirectory = job.jobDirectory;
-
-      const javaFileName =
-        normalizedLanguage === "java"
-          ? normalizeJavaFileName(fileName)
-          : null;
-
-      const sourceFile = path.join(
+      const csharpProcess = startCSharpInteractiveProcess({
         jobDirectory,
-        javaFileName ||
-          `main.${config.extension}`,
-      );
-
-      fs.writeFileSync(
-        sourceFile,
-        code,
-        "utf8",
-      );
-
-      console.log(
-        "📄 Source:",
-        sourceFile,
-      );
-
-      // =====================================================
-      // DOCKER INTERACTIVE
-      // =====================================================
-
-      if (config.type === "docker") {
-        const dockerProcess =
-          startDockerInteractiveProcess({
-            config,
-            normalizedLanguage,
-            jobDirectory,
-          });
-
-        const processInfo = {
-          processId,
-          type: "docker",
-          language: normalizedLanguage,
-          process: dockerProcess,
-          jobDirectory,
-          startedAt: Date.now(),
-          finished: false,
-          exitCode: null,
-          signal: null,
-          timedOut: false,
-          outputBuffer: "",
-          stderrBuffer: "",
-        };
-
-        runningProcesses.set(
-          processId,
-          processInfo,
-        );
-
-        dockerProcess.stdout.on(
-          "data",
-          (data) => {
-            if (processInfo.finished) {
-              return;
-            }
-
-            const text = data.toString();
-
-            console.log(
-              `📤 [${processId}]`,
-              JSON.stringify(text),
-            );
-
-            processInfo.outputBuffer += text;
-          },
-        );
-
-        dockerProcess.stderr.on(
-          "data",
-          (data) => {
-            if (processInfo.finished) {
-              return;
-            }
-
-            const text = data.toString();
-
-            console.log(
-              `⚠️ [${processId}]`,
-              JSON.stringify(text),
-            );
-
-            processInfo.outputBuffer += text;
-
-            processInfo.stderrBuffer += text;
-          },
-        );
-
-        dockerProcess.on(
-          "error",
-          (error) => {
-            if (processInfo.finished) {
-              return;
-            }
-
-            console.error(
-              `❌ Docker process error [${processId}]:`,
-              error.message,
-            );
-
-            processInfo.finished = true;
-
-            processInfo.exitCode = 1;
-
-            processInfo.outputBuffer +=
-              `\r\n${error.message}\r\n`;
-          },
-        );
-
-        dockerProcess.on(
-          "close",
-          (exitCode) => {
-            if (processInfo.finished) {
-              return;
-            }
-
-            console.log(
-              `⏹ Docker process exit [${processId}]`,
-              exitCode,
-            );
-
-            processInfo.finished = true;
-
-            processInfo.exitCode =
-              typeof exitCode === "number"
-                ? exitCode
-                : 0;
-          },
-        );
-
-        return res.json({
-          success: true,
-          processId,
-          message:
-            "Interactive Docker process started.",
-          executionType: "docker",
-        });
-      }
-
-      // =====================================================
-      // NATIVE INTERACTIVE
-      // =====================================================
-
-      const compileConfig =
-        normalizedLanguage === "java"
-          ? ["javac", javaFileName]
-          : null;
-
-      const compileResult =
-        await compileNativeSource(
-          config,
-          jobDirectory,
-          compileConfig,
-        );
-
-      if (!compileResult.success) {
-        cleanupDirectory(jobDirectory);
-
-        jobDirectory = null;
-
-        return res.json({
-          success: false,
-          processId: null,
-          output: compileResult.output,
-          stdout: compileResult.stdout,
-          stderr: compileResult.stderr,
-          exitCode: compileResult.exitCode,
-        });
-      }
-
-      console.log(
-        "✅ Compilation successful",
-      );
-
-      const interactiveConfig =
-        normalizedLanguage === "java"
-          ? {
-              ...config,
-              __javaFileName:
-                javaFileName,
-            }
-          : config;
-
-      const ptyProcess =
-        startNativeInteractiveProcess({
-          config: interactiveConfig,
-          normalizedLanguage,
-          jobDirectory,
-          processId,
-        });
+      });
 
       const processInfo = {
         processId,
-        type: "native",
+        type: "csharp",
         language: normalizedLanguage,
-        ptyProcess,
+        process: csharpProcess,
+        jobDirectory,
+        startedAt: Date.now(),
+        finished: false,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        outputBuffer: "",
+        stderrBuffer: "",
+      };
+
+      runningProcesses.set(processId, processInfo);
+
+      csharpProcess.stdout.on("data", (data) => {
+        const text = data.toString();
+
+        console.log(`📤 [${processId}]`, JSON.stringify(text));
+
+        processInfo.outputBuffer += text;
+      });
+
+      csharpProcess.stderr.on("data", (data) => {
+        const text = data.toString();
+
+        console.log(`⚠️ [${processId}]`, JSON.stringify(text));
+
+        processInfo.outputBuffer += text;
+
+        processInfo.stderrBuffer += text;
+      });
+
+      csharpProcess.on("error", (error) => {
+        if (processInfo.finished) {
+          return;
+        }
+
+        console.error(`❌ C# process error [${processId}]:`, error.message);
+
+        processInfo.finished = true;
+
+        processInfo.exitCode = 1;
+
+        processInfo.outputBuffer += `\r\n${error.message}\r\n`;
+      });
+
+      csharpProcess.on("close", (exitCode) => {
+        if (processInfo.finished) {
+          return;
+        }
+
+        console.log(`⏹ C# process exit [${processId}]`, exitCode);
+
+        processInfo.finished = true;
+
+        processInfo.exitCode = typeof exitCode === "number" ? exitCode : 0;
+      });
+
+      return res.json({
+        success: true,
+        processId,
+        message: "Interactive C# process started.",
+        executionType: "native",
+      });
+    }
+
+    // =====================================================
+    // DOCKER INTERACTIVE
+    // =====================================================
+
+    if (config.type === "docker") {
+      const dockerProcess = startDockerInteractiveProcess({
+        config,
+        normalizedLanguage,
+        jobDirectory,
+      });
+
+      const processInfo = {
+        processId,
+        type: "docker",
+        language: normalizedLanguage,
+        process: dockerProcess,
         jobDirectory,
         startedAt: Date.now(),
         finished: false,
@@ -1272,75 +1110,161 @@ app.post(
         outputBuffer: "",
       };
 
-      runningProcesses.set(
-        processId,
-        processInfo,
-      );
+      runningProcesses.set(processId, processInfo);
 
-      ptyProcess.onData((data) => {
-        console.log(
-          `📤 [${processId}]`,
-          JSON.stringify(data),
-        );
+      dockerProcess.stdout.on("data", (data) => {
+        if (processInfo.finished) {
+          return;
+        }
 
-        processInfo.outputBuffer += data;
+        const text = data.toString();
+
+        console.log(`📤 [${processId}]`, JSON.stringify(text));
+
+        processInfo.outputBuffer += text;
       });
 
-      ptyProcess.onExit(
-        ({ exitCode, signal }) => {
-          console.log("================================");
+      dockerProcess.stderr.on("data", (data) => {
+        if (processInfo.finished) {
+          return;
+        }
 
-          console.log(
-            `⏹ PTY EXIT [${processId}]`,
-          );
+        const text = data.toString();
 
-          console.log(
-            "Exit code:",
-            exitCode,
-          );
+        console.log(`⚠️ [${processId}]`, JSON.stringify(text));
 
-          console.log(
-            "Signal:",
-            signal,
-          );
+        processInfo.outputBuffer += text;
+      });
 
-          console.log("================================");
+      dockerProcess.on("error", (error) => {
+        if (processInfo.finished) {
+          return;
+        }
 
-          processInfo.finished = true;
+        console.error(`❌ Docker process error [${processId}]:`, error.message);
 
-          processInfo.exitCode =
-            typeof exitCode === "number"
-              ? exitCode
-              : 0;
+        processInfo.finished = true;
 
-          processInfo.signal =
-            signal || null;
-        },
-      );
+        processInfo.exitCode = 1;
+
+        processInfo.outputBuffer += `\r\n${error.message}\r\n`;
+      });
+
+      dockerProcess.on("close", (exitCode) => {
+        if (processInfo.finished) {
+          return;
+        }
+
+        console.log(`⏹ Docker process exit [${processId}]`, exitCode);
+
+        processInfo.finished = true;
+
+        processInfo.exitCode = typeof exitCode === "number" ? exitCode : 0;
+      });
 
       return res.json({
         success: true,
         processId,
-        message: "Interactive PTY started.",
-        executionType: "native",
-      });
-    } catch (error) {
-      console.error(
-        "❌ Interactive start error:",
-        error,
-      );
-
-      cleanupDirectory(jobDirectory);
-
-      return res.status(500).json({
-        success: false,
-        message:
-          error.message ||
-          "Could not start interactive process.",
+        message: "Interactive Docker process started.",
+        executionType: "docker",
       });
     }
-  },
-);
+
+    // =====================================================
+    // NATIVE INTERACTIVE
+    // =====================================================
+
+    const compileConfig =
+      normalizedLanguage === "java" ? ["javac", javaFileName] : null;
+
+    const compileResult = await compileNativeSource(
+      config,
+      jobDirectory,
+      compileConfig,
+    );
+
+    if (!compileResult.success) {
+      cleanupDirectory(jobDirectory);
+
+      jobDirectory = null;
+
+      return res.json({
+        success: false,
+        processId: null,
+        output: compileResult.output,
+        stdout: compileResult.stdout,
+        stderr: compileResult.stderr,
+        exitCode: compileResult.exitCode,
+        timedOut: compileResult.timedOut || false,
+      });
+    }
+
+    console.log("✅ Compilation successful");
+
+    const interactiveConfig =
+      normalizedLanguage === "java"
+        ? {
+            ...config,
+            __javaFileName: javaFileName,
+          }
+        : config;
+
+    const ptyProcess = startNativeInteractiveProcess({
+      config: interactiveConfig,
+      normalizedLanguage,
+      jobDirectory,
+    });
+
+    const processInfo = {
+      processId,
+      type: "native",
+      language: normalizedLanguage,
+      ptyProcess,
+      jobDirectory,
+      startedAt: Date.now(),
+      finished: false,
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      outputBuffer: "",
+    };
+
+    runningProcesses.set(processId, processInfo);
+
+    ptyProcess.onData((data) => {
+      console.log(`📤 [${processId}]`, JSON.stringify(data));
+
+      processInfo.outputBuffer += data;
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      console.log(`⏹ PTY EXIT [${processId}]`);
+
+      processInfo.finished = true;
+
+      processInfo.exitCode = typeof exitCode === "number" ? exitCode : 0;
+
+      processInfo.signal = signal || null;
+    });
+
+    return res.json({
+      success: true,
+      processId,
+      message: "Interactive PTY started.",
+      executionType: "native",
+    });
+  } catch (error) {
+    console.error("❌ Interactive start error:", error);
+
+    cleanupDirectory(jobDirectory);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Could not start interactive process.",
+    });
+  }
+});
+
 // =========================================================
 // SEND INTERACTIVE INPUT
 // =========================================================
@@ -1381,52 +1305,46 @@ app.post("/api/interactive/input", (req, res) => {
   try {
     let value = String(input);
 
-    if (processInfo.type === "docker") {
+    // =====================================================
+    // C# + DOCKER STDIN
+    // =====================================================
+
+    if (processInfo.type === "docker" || processInfo.type === "csharp") {
       const stdin = processInfo.process.stdin;
 
-      if (
-        !stdin ||
-        stdin.destroyed ||
-        stdin.writableEnded
-      ) {
+      if (!stdin || stdin.destroyed || stdin.writableEnded) {
         return res.status(400).json({
           success: false,
           message: "Process stdin is unavailable.",
         });
       }
 
-      stdin.write(value);
-    } else {
-      if (
-        !value.endsWith("\n") &&
-        !value.endsWith("\r")
-      ) {
+      stdin.write(value + "\n");
+    }
+
+    // =====================================================
+    // NATIVE PTY STDIN
+    // =====================================================
+    else {
+      if (!value.endsWith("\n") && !value.endsWith("\r")) {
         value += "\r";
       }
 
       processInfo.ptyProcess.write(value);
     }
 
-    console.log(
-      `⌨ [${processId}] INPUT:`,
-      JSON.stringify(value),
-    );
+    console.log(`⌨ [${processId}] INPUT:`, JSON.stringify(value));
 
     return res.json({
       success: true,
       message: "Input sent to process.",
     });
   } catch (error) {
-    console.error(
-      "❌ Interactive input error:",
-      error.message,
-    );
+    console.error("❌ Interactive input error:", error.message);
 
     return res.status(500).json({
       success: false,
-      message:
-        error.message ||
-        "Could not send input.",
+      message: error.message || "Could not send input.",
     });
   }
 });
@@ -1435,205 +1353,177 @@ app.post("/api/interactive/input", (req, res) => {
 // END INTERACTIVE INPUT
 // =========================================================
 
-app.post(
-  "/api/interactive/end-input",
-  (req, res) => {
-    const { processId } = req.body || {};
+app.post("/api/interactive/end-input", (req, res) => {
+  const { processId } = req.body || {};
 
-    if (!processId) {
-      return res.status(400).json({
-        success: false,
-        message: "processId is required.",
-      });
-    }
+  if (!processId) {
+    return res.status(400).json({
+      success: false,
+      message: "processId is required.",
+    });
+  }
 
-    const processInfo =
-      runningProcesses.get(processId);
+  const processInfo = runningProcesses.get(processId);
 
-    if (!processInfo) {
-      return res.status(404).json({
-        success: false,
-        message: "Interactive process not found.",
-      });
-    }
+  if (!processInfo) {
+    return res.status(404).json({
+      success: false,
+      message: "Interactive process not found.",
+    });
+  }
 
-    try {
-      if (processInfo.type === "docker") {
-        const stdin =
-          processInfo.process.stdin;
+  try {
+    if (processInfo.type === "docker" || processInfo.type === "csharp") {
+      const stdin = processInfo.process.stdin;
 
-        if (
-          stdin &&
-          !stdin.destroyed &&
-          !stdin.writableEnded
-        ) {
-          stdin.end();
-        }
+      if (stdin && !stdin.destroyed && !stdin.writableEnded) {
+        stdin.end();
       }
-
-      return res.json({
-        success: true,
-        message: "Input stream closed.",
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        message:
-          error.message ||
-          "Could not close input.",
-      });
     }
-  },
-);
+
+    return res.json({
+      success: true,
+      message: "Input stream closed.",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Could not close input.",
+    });
+  }
+});
 
 // =========================================================
 // GET INTERACTIVE OUTPUT
 // =========================================================
 
-app.get(
-  "/api/interactive/output/:processId",
-  (req, res) => {
-    const { processId } = req.params;
+app.get("/api/interactive/output/:processId", (req, res) => {
+  const { processId } = req.params;
 
-    const processInfo =
-      runningProcesses.get(processId);
+  const processInfo = runningProcesses.get(processId);
 
-    if (!processInfo) {
-      return res.status(404).json({
-        success: false,
-        message: "Interactive process not found.",
-      });
-    }
-
-    const output =
-      processInfo.outputBuffer || "";
-
-    processInfo.outputBuffer = "";
-
-    return res.json({
-      success: true,
-      processId,
-      output,
-      finished: processInfo.finished,
-      timedOut: processInfo.timedOut,
-      exitCode: processInfo.exitCode,
-      signal: processInfo.signal,
-      language: processInfo.language,
+  if (!processInfo) {
+    return res.status(404).json({
+      success: false,
+      message: "Interactive process not found.",
     });
-  },
-);
+  }
+
+  const output = processInfo.outputBuffer || "";
+
+  processInfo.outputBuffer = "";
+
+  return res.json({
+    success: true,
+    processId,
+    output,
+    finished: processInfo.finished,
+    timedOut: processInfo.timedOut,
+    exitCode: processInfo.exitCode,
+    signal: processInfo.signal,
+    language: processInfo.language,
+  });
+});
 
 // =========================================================
 // STOP INTERACTIVE PROCESS
 // =========================================================
 
-app.post(
-  "/api/interactive/stop",
-  (req, res) => {
-    const { processId } = req.body || {};
+app.post("/api/interactive/stop", (req, res) => {
+  const { processId } = req.body || {};
 
-    if (!processId) {
-      return res.status(400).json({
-        success: false,
-        message: "processId is required.",
-      });
-    }
-
-    const processInfo =
-      runningProcesses.get(processId);
-
-    if (!processInfo) {
-      return res.status(404).json({
-        success: false,
-        message: "Interactive process not found.",
-      });
-    }
-
-    console.log(
-      "⏹ Stopping process:",
-      processId,
-    );
-
-    try {
-      if (processInfo.type === "docker") {
-        try {
-          if (
-            processInfo.process.stdin &&
-            !processInfo.process.stdin.destroyed
-          ) {
-            processInfo.process.stdin.destroy();
-          }
-        } catch {}
-
-        try {
-          processInfo.process.kill(
-            "SIGKILL",
-          );
-        } catch {}
-      } else {
-        try {
-          processInfo.ptyProcess.kill();
-        } catch {}
-      }
-    } catch (error) {
-      console.error(
-        "Stop process error:",
-        error.message,
-      );
-    }
-
-    processInfo.finished = true;
-
-    processInfo.exitCode = 130;
-
-    cleanupDirectory(
-      processInfo.jobDirectory,
-    );
-
-    runningProcesses.delete(processId);
-
-    return res.json({
-      success: true,
-      message: "Interactive process stopped.",
+  if (!processId) {
+    return res.status(400).json({
+      success: false,
+      message: "processId is required.",
     });
-  },
-);
+  }
+
+  const processInfo = runningProcesses.get(processId);
+
+  if (!processInfo) {
+    return res.status(404).json({
+      success: false,
+      message: "Interactive process not found.",
+    });
+  }
+
+  console.log("⏹ Stopping process:", processId);
+
+  try {
+    // =====================================================
+    // C# + DOCKER
+    // =====================================================
+
+    if (processInfo.type === "docker" || processInfo.type === "csharp") {
+      try {
+        if (processInfo.process.stdin && !processInfo.process.stdin.destroyed) {
+          processInfo.process.stdin.destroy();
+        }
+      } catch {}
+
+      try {
+        processInfo.process.kill("SIGKILL");
+      } catch {}
+    }
+
+    // =====================================================
+    // NATIVE PTY
+    // =====================================================
+    else {
+      try {
+        processInfo.ptyProcess.kill();
+      } catch {}
+    }
+  } catch (error) {
+    console.error("Stop process error:", error.message);
+  }
+
+  processInfo.finished = true;
+
+  processInfo.exitCode = 130;
+
+  cleanupDirectory(processInfo.jobDirectory);
+
+  runningProcesses.delete(processId);
+
+  return res.json({
+    success: true,
+    message: "Interactive process stopped.",
+  });
+});
 
 // =========================================================
 // LIST INTERACTIVE PROCESSES
 // =========================================================
 
-app.get(
-  "/api/interactive/processes",
-  (req, res) => {
-    const processes =
-      Array.from(
-        runningProcesses.values(),
-      ).map((processInfo) => ({
-        processId:
-          processInfo.processId,
-        type: processInfo.type,
-        language:
-          processInfo.language,
-        finished:
-          processInfo.finished,
-        timedOut:
-          processInfo.timedOut,
-        exitCode:
-          processInfo.exitCode,
-        startedAt:
-          processInfo.startedAt,
-        outputLength:
-          processInfo.outputBuffer.length,
-      }));
+app.get("/api/interactive/processes", (req, res) => {
+  const processes = Array.from(runningProcesses.values()).map(
+    (processInfo) => ({
+      processId: processInfo.processId,
 
-    return res.json({
-      success: true,
-      count: processes.length,
-      processes,
-    });
-  },
-);
+      type: processInfo.type,
+
+      language: processInfo.language,
+
+      finished: processInfo.finished,
+
+      timedOut: processInfo.timedOut,
+
+      exitCode: processInfo.exitCode,
+
+      startedAt: processInfo.startedAt,
+
+      outputLength: processInfo.outputBuffer.length,
+    }),
+  );
+
+  return res.json({
+    success: true,
+    count: processes.length,
+    processes,
+  });
+});
 
 // =========================================================
 // CLEANUP FINISHED PROCESSES
@@ -1642,30 +1532,19 @@ app.get(
 setInterval(() => {
   const now = Date.now();
 
-  for (
-    const [processId, processInfo]
-    of runningProcesses
-  ) {
+  for (const [processId, processInfo] of runningProcesses) {
     if (!processInfo.finished) {
       continue;
     }
 
-    const age =
-      now - processInfo.startedAt;
+    const age = now - processInfo.startedAt;
 
     if (age > 60000) {
-      cleanupDirectory(
-        processInfo.jobDirectory,
-      );
+      cleanupDirectory(processInfo.jobDirectory);
 
-      runningProcesses.delete(
-        processId,
-      );
+      runningProcesses.delete(processId);
 
-      console.log(
-        "🧹 Removed finished process:",
-        processId,
-      );
+      console.log("🧹 Removed finished process:", processId);
     }
   }
 }, 30000);
@@ -1685,105 +1564,59 @@ app.use((req, res) => {
 // GLOBAL ERROR
 // =========================================================
 
-app.use(
-  (error, req, res, next) => {
-    console.error(
-      "❌ Global server error:",
-      error,
-    );
+app.use((error, req, res, next) => {
+  console.error("❌ Global server error:", error);
 
-    if (res.headersSent) {
-      return next(error);
-    }
+  if (res.headersSent) {
+    return next(error);
+  }
 
-    res.status(500).json({
-      success: false,
-      message:
-        error?.message ||
-        "Internal server error.",
-    });
-  },
-);
+  res.status(500).json({
+    success: false,
+    message: error?.message || "Internal server error.",
+  });
+});
 
 // =========================================================
 // START SERVER
 // =========================================================
 
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      "================================",
-    );
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("================================");
 
-    console.log(
-      "🚀 CodeForge EXECUTION SERVICE",
-    );
+  console.log("🚀 CodeForge EXECUTION SERVICE");
 
-    console.log(
-      "================================",
-    );
+  console.log("================================");
 
-    console.log(`Port: ${PORT}`);
+  console.log(`Port: ${PORT}`);
 
-    console.log(
-      "Platform:",
-      process.platform,
-    );
+  console.log("Platform:", process.platform);
 
-    console.log("Languages:");
+  console.log("Languages:");
 
-    console.log(
-      "C / C++ / Java / Python / JavaScript / Go / PHP / Rust / C#",
-    );
+  console.log("C / C++ / Java / Python / JavaScript / Go / PHP / Rust / C#");
 
-    console.log(
-      "================================",
-    );
+  console.log("================================");
 
-    console.log(
-      "Interactive execution: ENABLED ✅",
-    );
+  console.log("Interactive execution: ENABLED ✅");
 
-    console.log(
-      "PTY terminal: ENABLED ✅",
-    );
+  console.log("PTY terminal: ENABLED ✅");
 
-    console.log(
-      "Interactive stdin: ENABLED ✅",
-    );
+  console.log("Interactive stdin: ENABLED ✅");
 
-    console.log(
-      "Windows executable support: ENABLED ✅",
-    );
+  console.log("Windows executable support: ENABLED ✅");
 
-    console.log(
-      "Docker Go execution: ENABLED ✅",
-    );
+  console.log("Docker Go execution: ENABLED ✅");
 
-    console.log(
-      "Docker PHP execution: ENABLED ✅",
-    );
+  console.log("Native PHP execution: ENABLED ✅");
 
-    console.log(
-      "Docker Rust execution: ENABLED ✅",
-    );
+  console.log("Native Rust execution: ENABLED ✅");
 
-    console.log(
-      "Docker C# execution: ENABLED ✅",
-    );
+  console.log("Native C# (.NET 10) execution: ENABLED ✅");
 
-    console.log(
-      "Interactive timeout: DISABLED ✅",
-    );
+  console.log("Interactive timeout: DISABLED ✅");
 
-    console.log(
-      "Process persistence: ENABLED ✅",
-    );
+  console.log("Process persistence: ENABLED ✅");
 
-    console.log(
-      "================================",
-    );
-  },
-);
+  console.log("================================");
+});
